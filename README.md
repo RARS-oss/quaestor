@@ -37,13 +37,15 @@ receipt, watch it verify — then change one character and watch it fail.
 
 ## 👩‍⚖️ For judges & reviewers — a guided tour
 
-The depth is in the repo. Here's the fastest path to the parts that matter:
+**Open [`dashboard/index.html`](dashboard/index.html) first** — the front door to every
+verifiable surface. Then the fastest path to the parts that matter:
 
 | You have | Do this | You'll see |
 |---|---|---|
 | **1 minute** | `make verify` (or open `dashboard/verifier.html`, click **Verify**) | Every signed receipt of the week re-checks, offline, no keys |
 | **3 minutes** | Open `dashboard/track-record.html`, click **Verify**, then **Tamper** | A provable agent P&L record; the signature catching a forgery live |
-| **5 minutes** | `bash scripts/red_team.sh` | The four ways you'd fake trading results — each caught |
+| **5 minutes** | `make replay` · `bash scripts/red_team.sh` | Every decision re-derived from signed inputs; the four ways to fake results, each caught |
+| **7 minutes** | Open `dashboard/marketplace.html` | "Alpaca Verified Agents" — the product this primitive unlocks |
 | **10 minutes** | Read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) + skim [`attested_alpaca/`](attested_alpaca/) | How any Alpaca agent adopts verifiable execution in a few lines |
 | **15 minutes** | Read [`patches/bulla/`](patches/bulla/) — the sealed-egress tunnel | We patched a Rust sandbox so an agent trades *inside* the seal |
 
@@ -68,6 +70,9 @@ is the easiest to check. That's the point.
 - **Zero-knowledge risk proofs** (`quaestor/zk.py`): a Bulletproofs range proof per order
   that its worst-case loss is under a hard cap, size hidden; the commitment rides inside the
   Alpaca `client_order_id`.
+- **Deterministic replay** (`quaestor/replay.py`): each decision seals its full risk-gate
+  inputs, so `make replay` re-derives every approve/reject verdict from signed data — proof
+  the agent's decisions are reproducible, not arbitrary.
 - **External anchor** (`quaestor/anchor.py`): the ledger head is witnessed to an append-only
   log — so even truncating the newest losing day is caught.
 - **Verify anywhere**: `bulla verify` offline, or the same check compiled to **WebAssembly**

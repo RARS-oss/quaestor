@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>quaestor mission control</title>
+<meta name="description" content="A static, self-contained console snapshot of an autonomous verifiable options-trading agent — every trade cryptographically signed.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#f5f7fb; --surface:#ffffff; --surface-2:#eef1f7; --line:#dde3ee;
+    --ink:#12151f; --muted:#5a6478; --faint:#8b94a8;
+    --accent:#4b5cf0; --verified:#0f9d63; --forgery:#d94434; --hash:#0f8fa6;
+    --sans:"IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#0b0e15; --surface:#131826; --surface-2:#0f1420; --line:#232a3d;
+      --ink:#e8ecf6; --muted:#8b96ad; --faint:#5a6580;
+      --accent:#6a7cff; --verified:#35c98c; --forgery:#ff6459; --hash:#5fd6e4;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#0b0e15; --surface:#131826; --surface-2:#0f1420; --line:#232a3d;
+    --ink:#e8ecf6; --muted:#8b96ad; --faint:#5a6580;
+    --accent:#6a7cff; --verified:#35c98c; --forgery:#ff6459; --hash:#5fd6e4;
+  }
+  :root[data-theme="light"]{
+    --bg:#f5f7fb; --surface:#ffffff; --surface-2:#eef1f7; --line:#dde3ee;
+    --ink:#12151f; --muted:#5a6478; --faint:#8b94a8;
+    --accent:#4b5cf0; --verified:#0f9d63; --forgery:#d94434; --hash:#0f8fa6;
+  }
+  * { box-sizing:border-box; }
+  html { -webkit-text-size-adjust:100%; }
+  body {
+    margin:0; background:var(--bg); color:var(--ink);
+    font:15px/1.6 var(--sans); letter-spacing:-0.003em;
+    background-image:
+      radial-gradient(1200px 520px at 82% -8%, rgba(106,124,255,0.10), transparent 60%),
+      radial-gradient(900px 500px at -5% 0%, rgba(53,201,140,0.06), transparent 55%);
+    background-repeat:no-repeat; background-attachment:fixed;
+  }
+  a { color:var(--accent); text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  .wrap { max-width:1040px; margin:0 auto; padding:34px 22px 72px; }
+  .num, .mono { font-variant-numeric:tabular-nums; }
+
+  .top { display:flex; align-items:flex-start; justify-content:space-between; gap:16px;
+    flex-wrap:wrap; }
+  .brand { display:flex; align-items:center; gap:10px; color:var(--muted);
+    font:600 13px/1 var(--mono); letter-spacing:0.06em; text-transform:uppercase; }
+  .brand .dot { width:9px; height:9px; border-radius:50%; background:var(--verified);
+    box-shadow:0 0 0 4px rgba(53,201,140,0.16); }
+  .toolbar { display:flex; align-items:center; gap:10px; }
+  .theme-btn { border:1px solid var(--line); background:var(--surface); color:var(--muted);
+    border-radius:9px; padding:8px 12px; font:600 12px var(--mono); cursor:pointer;
+    letter-spacing:0.04em; }
+  .theme-btn:hover { color:var(--ink); border-color:var(--accent); }
+
+  h1.title { font-size:clamp(24px,3.5vw,34px); line-height:1.08; margin:18px 0 6px;
+    letter-spacing:-0.022em; font-weight:600; }
+  h1.title .g { color:var(--verified); }
+  p.lede { color:var(--muted); font-size:15.5px; margin:0 0 8px; max-width:70ch; }
+  .stamp { color:var(--faint); font:500 12px/1.5 var(--mono); margin:6px 0 0;
+    display:flex; gap:14px; flex-wrap:wrap; }
+  .stamp b { color:var(--muted); font-weight:600; }
+
+  /* status strip */
+  .strip { display:flex; align-items:stretch; gap:14px; flex-wrap:wrap; margin:22px 0 6px; }
+  .pill { display:flex; align-items:center; gap:12px; padding:14px 18px; border-radius:14px;
+    border:1px solid var(--line); background:var(--surface); min-width:230px; }
+  .pill .pdot { width:11px; height:11px; border-radius:50%; background:var(--faint);
+    flex:none; position:relative; }
+  .pill.live .pdot { background:var(--verified); box-shadow:0 0 0 4px rgba(53,201,140,0.18); }
+  .pill.closed .pdot { background:var(--hash); box-shadow:0 0 0 4px rgba(95,214,228,0.16); }
+  .pill.wait .pdot { background:var(--accent); box-shadow:0 0 0 4px rgba(106,124,255,0.16); }
+  .pill.idle .pdot { background:var(--faint); }
+  .pill.live .pdot::after { content:""; position:absolute; inset:-4px; border-radius:50%;
+    border:2px solid var(--verified); opacity:0.55; animation:ping 1.8s ease-out infinite; }
+  @keyframes ping { 0%{ transform:scale(0.6); opacity:0.6; } 100%{ transform:scale(2.1); opacity:0; } }
+  .pill .plabel { font:600 14px/1 var(--mono); letter-spacing:0.04em; }
+  .pill .psub { color:var(--faint); font:500 11px/1.3 var(--mono); margin-top:5px; }
+
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr));
+    gap:14px; flex:1 1 480px; }
+  .stat { background:var(--surface); border:1px solid var(--line); border-radius:14px;
+    padding:14px 16px 13px; }
+  .stat .k { color:var(--muted); font:600 11px/1 var(--mono); letter-spacing:0.08em;
+    text-transform:uppercase; margin-bottom:8px; }
+  .stat .v { font-size:23px; font-weight:600; letter-spacing:-0.02em; font-variant-numeric:tabular-nums; }
+  .stat .v.sub { font-size:13px; color:var(--muted); font-weight:500; margin-top:3px; letter-spacing:0; }
+  .stat.pl-pos .v { color:var(--verified); }
+  .stat.pl-neg .v { color:var(--forgery); }
+
+  section.card { background:var(--surface); border:1px solid var(--line);
+    border-radius:18px; padding:22px 22px 24px; margin:20px 0; }
+  section.card > h2 { font-size:13px; margin:0 0 4px; color:var(--muted);
+    font-family:var(--mono); font-weight:600; letter-spacing:0.10em; text-transform:uppercase; }
+  section.card > .h2sub { color:var(--faint); font-size:13.5px; margin:0 0 16px; }
+
+  /* equity chart */
+  svg.equity { width:100%; height:auto; display:block; overflow:visible; }
+  svg.equity .grid { stroke:var(--line); stroke-width:1; stroke-dasharray:2 5; opacity:0.7; }
+  svg.equity .ylab { fill:var(--faint); font:500 11px var(--mono); }
+  svg.equity .equity-line { stroke:var(--verified); stroke-width:2.4;
+    stroke-linejoin:round; stroke-linecap:round; }
+  svg.equity .end-dot { fill:var(--verified); stroke:var(--bg); stroke-width:2; }
+  svg.equity .end-halo { fill:var(--verified); opacity:0.18; }
+  .chartcap { display:flex; justify-content:space-between; align-items:baseline;
+    color:var(--faint); font:500 12px/1.4 var(--mono); margin-top:12px; flex-wrap:wrap; gap:6px; }
+
+  .empty { color:var(--muted); font-size:14.5px; padding:30px 22px; text-align:center;
+    border:1px dashed var(--line); border-radius:12px; background:var(--surface-2);
+    max-width:70ch; margin:0 auto; }
+
+  /* tables */
+  .tablewrap { overflow-x:auto; border:1px solid var(--line); border-radius:12px; }
+  table.orders { width:100%; border-collapse:collapse; font-size:13px; min-width:640px; }
+  table.orders th { text-align:left; color:var(--muted); font:600 11px var(--mono);
+    letter-spacing:0.06em; text-transform:uppercase; padding:11px 14px;
+    border-bottom:1px solid var(--line); background:var(--surface-2); white-space:nowrap; }
+  table.orders th.num, table.orders td.num { text-align:right; }
+  table.orders td { padding:11px 14px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  table.orders tbody tr:last-child td { border-bottom:none; }
+  table.orders .mono { font-family:var(--mono); font-variant-numeric:tabular-nums; }
+  table.orders .sym { color:var(--hash); font-weight:500; }
+  table.orders .side.buy { color:var(--verified); font-weight:600; }
+  table.orders .side.sell { color:var(--forgery); font-weight:600; }
+  .st { font:600 11.5px/1 var(--mono); letter-spacing:0.04em; text-transform:uppercase;
+    padding:4px 9px; border-radius:999px; border:1px solid transparent; display:inline-block; }
+  .st.ok { color:var(--verified); border-color:var(--verified); background:rgba(53,201,140,0.10); }
+  .st.bad { color:var(--forgery); border-color:var(--forgery); background:rgba(255,100,89,0.10); }
+  .st.live { color:var(--accent); border-color:var(--accent); background:rgba(106,124,255,0.10); }
+  .st.muted { color:var(--faint); border-color:var(--line); background:var(--surface-2); }
+  .badge { font:600 11px/1 var(--mono); letter-spacing:0.05em; text-transform:uppercase;
+    padding:4px 9px; border-radius:6px; display:inline-block; }
+  .badge.sealed { color:var(--verified); background:rgba(53,201,140,0.12); }
+  .badge.decision { color:var(--accent); background:rgba(106,124,255,0.12); }
+
+  /* provenance */
+  .prov { display:grid; grid-template-columns:1fr 1fr; gap:0; border:1px solid var(--line);
+    border-radius:12px; overflow:hidden; }
+  .prov .row { display:flex; flex-direction:column; gap:6px; padding:14px 16px;
+    border-bottom:1px solid var(--line); background:var(--surface); }
+  .prov .row:nth-child(odd) { border-right:1px solid var(--line); }
+  .prov .row .k { color:var(--muted); font:600 11px/1 var(--mono); letter-spacing:0.06em;
+    text-transform:uppercase; }
+  .prov .row .v { font-size:16px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .prov .row .hashv { font-family:var(--mono); font-size:12.5px; font-weight:500;
+    color:var(--hash); word-break:break-all; }
+  .prov .row .muted { color:var(--muted); font-weight:500; font-size:12.5px; }
+  @media (max-width:640px){ .prov { grid-template-columns:1fr; }
+    .prov .row:nth-child(odd){ border-right:none; } }
+
+  .recmini { margin-top:16px; }
+
+  code { font-family:var(--mono); background:var(--surface-2); padding:2px 6px;
+    border-radius:5px; font-size:12.5px; }
+  .cmds { display:flex; flex-direction:column; gap:8px; margin:4px 0 0; }
+  .cmds .cmd { font:500 13px/1.5 var(--mono); color:var(--ink); background:var(--surface-2);
+    border:1px solid var(--line); border-radius:9px; padding:10px 13px; overflow-x:auto; }
+  .cmds .cmd .c { color:var(--faint); }
+  .disclosure { color:var(--muted); font-size:12.5px; line-height:1.7; margin-top:6px; }
+  .disclosure b { color:var(--ink); }
+  .foot { color:var(--faint); font:500 12px/1.6 var(--mono); margin-top:28px;
+    padding-top:16px; border-top:1px solid var(--line); }
+
+  @media (prefers-reduced-motion: reduce){
+    * { animation:none !important; transition:none !important; }
+    .pill.live .pdot::after { display:none; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap"><div class="top"><div class="brand"><span class="dot"></span>quaestor · mission control</div><div class="toolbar"><button class="theme-btn" id="themeBtn" type="button" aria-label="toggle theme">theme</button></div></div><h1 class="title">The agent's whole state, in one <span class="g">verifiable</span> page.</h1><p class="lede">A static snapshot of quaestor — an autonomous options-trading agent whose every decision and fill is sealed in a signed, hash-chained receipt. No server runs behind this file; the data below was embedded at build time and travels with the page.</p><div class="stamp"><span><b>snapshot generated</b> Aug 28, 2026 · 19:34 ET</span><span><b>account</b> PA3OB6ZUD7WD · paper</span><span><b>session</b> 20260828-193442-session</span><span><b>orders from</b> 20260828-185132-session</span></div><div class="strip"><div class="pill closed"><span class="pdot"></span><div><div class="plabel">MARKET CLOSED</div><div class="psub">last heartbeat Aug 28, 18:30:26 ET</div></div></div><div class="stats"><div class="stat "><div class="k">Equity</div><div class="v">$100,000.00</div></div><div class="stat pl-pos"><div class="k">Today P&amp;L</div><div class="v">+0.00%</div><div class="v sub">$0.00</div></div><div class="stat pl-pos"><div class="k">Week P&amp;L</div><div class="v">+0.00%</div><div class="v sub">realized</div></div><div class="stat "><div class="k">Options level</div><div class="v">L3</div><div class="v sub">approved</div></div><div class="stat "><div class="k">Open positions</div><div class="v">0</div><div class="v sub">flat</div></div></div></div><section class="card"><h2>Equity curve</h2><p class="h2sub">Paper account equity, marked to market at each decision cycle.</p><div class="chartwrap"><svg viewBox="0 0 920 300" class="equity" role="img" aria-label="agent equity curve" preserveAspectRatio="none"><defs><linearGradient id="eqFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#35c98c" stop-opacity="0.30"/><stop offset="100%" stop-color="#35c98c" stop-opacity="0.02"/></linearGradient></defs><line x1="66" y1="26.00" x2="894" y2="26.00" class="grid"/><line x1="66" y1="146.00" x2="894" y2="146.00" class="grid"/><text x="56" y="149.50" class="ylab" text-anchor="end">$100,000.00</text><line x1="66" y1="266.00" x2="894" y2="266.00" class="grid"/><path d="M 66.00,266.00 L 66.00,146.00 L 894.00,146.00 L 894.00,266.00 Z" fill="url(#eqFill)" stroke="none"/><path d="M 66.00,146.00 L 894.00,146.00" class="equity-line" fill="none"/><circle cx="894.00" cy="146.00" r="9" class="end-halo"/><circle cx="894.00" cy="146.00" r="4.5" class="end-dot"/></svg></div><div class="chartcap"><span>Aug 28, 19:34 ET</span><span>1 equity mark · endpoint $100,000.00</span></div></section><section class="card"><h2>Orders</h2><p class="h2sub">Every order the agent logged this session — timestamp, contract, intent, limit and fill. Sealed orders carry a receipt of the exact request.</p><div class="tablewrap"><table class="orders"><thead><tr><th>Time</th><th>Symbol</th><th>Side</th><th>Type</th><th class="num">Limit</th><th>Status</th><th class="num">Fill</th></tr></thead><tbody><tr><td class="mono t">Aug 28, 18:51:43 ET</td><td class="mono sym">SPY260904C00825000</td><td class="side —">—</td><td class="mono ty">execute_sealed</td><td class="mono num">$0.01</td><td><span class="st muted">canceled</span></td><td class="mono num">0 / 1</td></tr></tbody></table></div></section><section class="card"><h2>Receipts &amp; seal</h2><p class="h2sub">The cryptographic backbone: each hash below is recomputable from the receipts on disk, and every seal is checkable offline.</p><div class="prov"><div class="row"><div class="k">Signed receipts</div><div class="v">7</div><div class="muted">2 sealed-execution · 5 decision</div></div><div class="row"><div class="k">Seal held (hermetic)</div><div class="v">7 / 7</div><div class="muted">net-namespaced, seccomp-filtered cells</div></div><div class="row"><div class="k">Sealed-execution ledger</div><div class="hashv" title="feb040a3eb48e128522222db579b1de957cde62862bfe1da9a26004a11bffca2">feb040a3eb48e1…4a11bffca2</div><div class="muted">1 entry</div></div><div class="row"><div class="k">Decision-run ledger</div><div class="hashv" title="8f384bf9036f37c24c53c0718ff4ceeb8bb68c1c8674db9a17745d70c3cbe65b">8f384bf9036f37…70c3cbe65b</div><div class="muted">9 entries</div></div><div class="row"><div class="k">External anchor</div><div class="muted">not yet anchored</div><div class="muted">witness the head with make anchor</div></div><div class="row"><div class="k">Signing key (Ed25519)</div><div class="hashv" title="638410c7750248db4c2cac993f4fd99b3695116d3b9eb5b3431e0ae99186117d">638410c7750248…e99186117d</div><div class="muted">receipt author</div></div><div class="row"><div class="k">Egress allowlist</div><div class="hashv">data.alpaca.markets:443</div><div class="muted">sealed CONNECT · deny-by-default</div></div><div class="row"><div class="k">Trading policy digest</div><div class="hashv" title="cd77119b8215837ff10807002d06375a8e2bace98fdcacb269641d58e65226af">cd77119b821583…58e65226af</div><div class="muted">fail-closed paper gate</div></div></div><div class="recmini"><div class="tablewrap"><table class="orders receipts"><thead><tr><th>Receipt</th><th>Kind</th><th>Seal</th><th>Chain head</th><th class="num">Egress</th></tr></thead><tbody><tr><td class="mono sym">c-20260828-233442-77ca68</td><td><span class="badge decision">decision</span></td><td><span class="st ok">seal held</span></td><td class="mono">fc2520c6d0decb…35d1e65de1</td><td class="num"><span class="muted">—</span></td></tr><tr><td class="mono sym">sealed-minimal</td><td><span class="badge sealed">sealed</span></td><td><span class="st ok">seal held</span></td><td class="mono">5d258f73a6452b…031005bd2f</td><td class="num"><span class="muted">6 egress</span></td></tr><tr><td class="mono sym">c-20260828-225103-37cdd4</td><td><span class="badge decision">decision</span></td><td><span class="st ok">seal held</span></td><td class="mono">adab49bf2e23a9…1a1245b2aa</td><td class="num"><span class="muted">—</span></td></tr><tr><td class="mono sym">sealed-demo</td><td><span class="badge sealed">sealed</span></td><td><span class="st ok">seal held</span></td><td class="mono">50f850e110fbac…20e00834b8</td><td class="num"><span class="muted">4 egress</span></td></tr><tr><td class="mono sym">c-20260828-215110-1321bd</td><td><span class="badge decision">decision</span></td><td><span class="st ok">seal held</span></td><td class="mono">e19e9ea190ef9a…8539ba9d4a</td><td class="num"><span class="muted">—</span></td></tr><tr><td class="mono sym">c-20260828-214009-038152</td><td><span class="badge decision">decision</span></td><td><span class="st ok">seal held</span></td><td class="mono">ef3a1e215f2064…17ea9ebafe</td><td class="num"><span class="muted">—</span></td></tr><tr><td class="mono sym">c-20260828-212859-b52eeb</td><td><span class="badge decision">decision</span></td><td><span class="st ok">seal held</span></td><td class="mono">654d64e2acac06…7caab84405</td><td class="num"><span class="muted">—</span></td></tr></tbody></table></div></div></section><section class="card"><h2>Verify it yourself</h2><p class="h2sub">None of this asks for trust. Re-check every signature and ledger chain offline, with no Alpaca credentials:</p><div class="cmds"><div class="cmd"><span class="c"># re-check every receipt signature + ledger chain, offline</span><br>make verify</div><div class="cmd">python -m quaestor verify</div><div class="cmd"><span class="c"># or open the in-browser verifier and tamper with a receipt</span><br>open dashboard/verifier.html</div></div><p class="disclosure" style="margin-top:16px"><b>Not investment advice.</b> Options trading involves significant risk. Paper-trading only; simulated results. A verifying receipt proves the agent executed exactly the inputs and orders recorded, inside a hermetic cell, signed by the key shown above — it does not predict future returns. See <a href="https://alpaca.markets/disclosures">alpaca.markets/disclosures</a>.</p></section><p class="foot">quaestor · provable agent performance · python -m quaestor {status,once,loop,verify,anchor,bundle,rehearse} · this page is a static snapshot — data embedded at build, no live connection</p><script type="application/json" id="quaestor-snapshot">{
+  "generated_from": "static build-time embed (no server, no wall clock)",
+  "snapshot_epoch": 1787960089.72,
+  "snapshot_et": "Aug 28, 2026 \u00b7 19:34 ET",
+  "account": "PA3OB6ZUD7WD",
+  "primary_session": "20260828-193442-session",
+  "orders_session": "20260828-185132-session",
+  "heartbeat": {
+    "ts": 1787956226.6091342,
+    "now_et": "2026-08-28T18:30:26.609134-04:00",
+    "state": "closed",
+    "detail": "",
+    "session": "/mnt/c/Users/Daniil/Desktop/alpaca-hack/quaestor/runs/20260828-183026-session"
+  },
+  "portfolio_state": {
+    "day_key": "2026-08-28",
+    "day_open_equity": 100000.0,
+    "day_pnl_pct": 0.0,
+    "fired_events": [],
+    "halted_today": false,
+    "halted_week": false,
+    "realized_pnl_today": 0.0,
+    "saved_at": 1787960089.7033381,
+    "week_key": "2026-W35",
+    "week_open_equity": 100000.0,
+    "week_pnl_pct": 0.0
+  },
+  "summary": {
+    "generated_at": "2026-08-28T23:34:49.720+00:00",
+    "session_dir": "/mnt/c/Users/Daniil/Desktop/alpaca-hack/quaestor/runs/20260828-193442-session",
+    "cycles": 1,
+    "equity_points": [
+      {
+        "t": 1787960082.629035,
+        "equity": 100000.0
+      }
+    ],
+    "equity_open": 100000.0,
+    "equity_last": 100000.0,
+    "realized_pnl": 0.0,
+    "intents": 0,
+    "verdicts": {
+      "approved": 0,
+      "rejected": 0
+    },
+    "executions": {},
+    "receipts": 1,
+    "orders_logged": 0,
+    "orders_by_action": {}
+  },
+  "positions_account": {
+    "equity": 100000.0,
+    "cash": 100000.0,
+    "buying_power": 400000.0,
+    "options_buying_power": 100000.0,
+    "options_approved_level": 3,
+    "options_trading_level": 3,
+    "positions": [],
+    "ts": 1787960083.4006944
+  },
+  "orders": [
+    {
+      "timestamp": "2026-08-28T22:51:43.327+00:00",
+      "action": "execute_sealed",
+      "order_id": "1148b7ef-e2a6-4cfb-bada-572bd107fcf0",
+      "client_order_id": "q-0dcdd6ae202d-a0",
+      "symbol": "SPY260904C00825000",
+      "side": "",
+      "qty": "1",
+      "type": "",
+      "limit_price": "0.01",
+      "tif": "",
+      "status": "canceled",
+      "filled_qty": "0.0",
+      "filled_avg_price": "0.0",
+      "error": ""
+    }
+  ],
+  "receipts": [
+    {
+      "id": "c-20260828-212859-b52eeb",
+      "kind": "decision",
+      "seal_ok": true,
+      "chain_head": "654d64e2acac06762e775ba21fe72306070259d3efec1f515bfa687caab84405",
+      "created_epoch": 1787952546,
+      "exit_code": 0,
+      "calls": 0
+    },
+    {
+      "id": "c-20260828-214009-038152",
+      "kind": "decision",
+      "seal_ok": true,
+      "chain_head": "ef3a1e215f206428e7eb5c0d6cb6cdb073625cc94710242749171217ea9ebafe",
+      "created_epoch": 1787953216,
+      "exit_code": 0,
+      "calls": 0
+    },
+    {
+      "id": "c-20260828-215110-1321bd",
+      "kind": "decision",
+      "seal_ok": true,
+      "chain_head": "e19e9ea190ef9afe325b5f63ee890af8824d2e58578014e5787e528539ba9d4a",
+      "created_epoch": 1787953878,
+      "exit_code": 0,
+      "calls": 0
+    },
+    {
+      "id": "c-20260828-225103-37cdd4",
+      "kind": "decision",
+      "seal_ok": true,
+      "chain_head": "adab49bf2e23a9d6f4c4036432e8118facb78e8605c94a0a80616e1a1245b2aa",
+      "created_epoch": 1787957471,
+      "exit_code": 0,
+      "calls": 0
+    },
+    {
+      "id": "c-20260828-233442-77ca68",
+      "kind": "decision",
+      "seal_ok": true,
+      "chain_head": "fc2520c6d0decb0981472e6e2abfeb007a40afc268d8f3018eeac335d1e65de1",
+      "created_epoch": 1787960089,
+      "exit_code": 0,
+      "calls": 0
+    },
+    {
+      "id": "sealed-demo",
+      "kind": "sealed",
+      "seal_ok": true,
+      "chain_head": "50f850e110fbac68288c98b289357611bbe7dd6ea211cb199a064020e00834b8",
+      "created_epoch": 1787955974,
+      "exit_code": 0,
+      "calls": 4
+    },
+    {
+      "id": "sealed-minimal",
+      "kind": "sealed",
+      "seal_ok": true,
+      "chain_head": "5d258f73a6452bc579ecf525f9e9f6065b92fd8ddb5e34656bcc58031005bd2f",
+      "created_epoch": 1787958483,
+      "exit_code": 0,
+      "calls": 6
+    }
+  ],
+  "sealed_ledger_head": "feb040a3eb48e128522222db579b1de957cde62862bfe1da9a26004a11bffca2",
+  "sealed_ledger_count": 1,
+  "decision_ledger_head": "8f384bf9036f37c24c53c0718ff4ceeb8bb68c1c8674db9a17745d70c3cbe65b",
+  "decision_ledger_count": 9,
+  "anchor_head": null,
+  "anchor_present": false
+}</script><script>
+(function(){
+  var KEY='quaestor-theme';
+  var root=document.documentElement, btn=document.getElementById('themeBtn');
+  try{ var s=localStorage.getItem(KEY); if(s){ root.setAttribute('data-theme', s); } }catch(e){}
+  function current(){
+    var t=root.getAttribute('data-theme');
+    if(t) return t;
+    return (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark':'light';
+  }
+  if(btn){ btn.addEventListener('click', function(){
+    var next = current()==='dark' ? 'light':'dark';
+    root.setAttribute('data-theme', next);
+    try{ localStorage.setItem(KEY, next); }catch(e){}
+  }); }
+})();
+</script>
+</div>
+</body>
+</html>

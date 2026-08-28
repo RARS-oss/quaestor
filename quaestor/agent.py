@@ -60,6 +60,7 @@ from quaestor.models import (
 )
 from quaestor.portfolio import PortfolioState
 from quaestor.receipts import ReceiptPress
+from quaestor.zk import ZkProver
 
 try:  # WSL/Linux has the system tz database; bare Windows python may lack tzdata
     from zoneinfo import ZoneInfo
@@ -97,6 +98,7 @@ class Agent:
         except Exception as exc:  # receipts must never block trading
             print(f"[quaestor] receipts unavailable: {exc!r}", file=sys.stderr)
             self.receipts = None
+        self.zk = ZkProver()  # fail-open by design: proofs are None when unavailable
         self._stop = False
 
     # ------------------------------------------------------------- portfolio io
@@ -217,9 +219,12 @@ class Agent:
 
         return refresh
 
-    def _execute(self, intent: TradeIntent, chain: dict[str, dict]) -> ExecutionReport:
-        """broker.execute with zk_prefix="" and, when supported, a chain_refresh callback."""
-        kwargs: dict[str, Any] = {"zk_prefix": ""}
+    def _execute(
+        self, intent: TradeIntent, chain: dict[str, dict], zk_prefix: str = ""
+    ) -> ExecutionReport:
+        """broker.execute with the intent's ZK commitment prefix (binds order->proof)
+        and, when supported, a chain_refresh callback."""
+        kwargs: dict[str, Any] = {"zk_prefix": zk_prefix}
         try:
             if "chain_refresh" in inspect.signature(self.broker.execute).parameters:
                 kwargs["chain_refresh"] = self._make_chain_refresh(intent)
@@ -402,6 +407,16 @@ class Agent:
             judged.append((intent, verdict))
             rec.verdicts.append(verdict.to_dict())
 
+        # -- zk: per approved intent, prove "max loss < 2^16 USD" in zero knowledge
+        zk_proofs: dict[str, Any] = {}
+        for intent, verdict in judged:
+            if verdict.approved:
+                proof = self.zk.prove_max_loss(intent.max_loss_usd)
+                if proof is not None:
+                    zk_proofs[intent.intent_id] = proof
+                else:
+                    notes.append(f"zk proof unavailable for intent {intent.intent_id}")
+
         # -- receipts: bind the decision (steps 4-5) in a bulla cell ----------
         # Every cycle is attested — a quiet cycle receipt proves the agent looked
         # at the market and chose to do nothing (discipline is part of the audit).
@@ -413,6 +428,7 @@ class Agent:
                 "due_events": due_events,
                 "intents": rec.intents,
                 "verdicts": rec.verdicts,
+                "zk_proofs": zk_proofs,
                 "inputs": {
                     "account": rec.account.to_dict() if rec.account else None,
                     "market_open": market_open,
@@ -433,7 +449,8 @@ class Agent:
                     f"intent {intent.intent_id} rejected: {'; '.join(verdict.reasons) or 'unknown'}"
                 )
                 continue
-            report = self._execute(intent, chains.get(intent.underlying, {}))
+            zk_prefix = ZkProver.commitment_prefix(zk_proofs.get(intent.intent_id))
+            report = self._execute(intent, chains.get(intent.underlying, {}), zk_prefix)
             rec.executions.append(report.to_dict())
 
         # -- step 7: persist ---------------------------------------------------

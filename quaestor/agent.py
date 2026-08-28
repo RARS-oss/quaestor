@@ -32,10 +32,12 @@ from __future__ import annotations
 
 import inspect
 import json
+import os
 import signal as _signal
 import sys
 import time
 import uuid
+from dataclasses import replace as replace_intent
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -75,6 +77,10 @@ _SLEEP_CHUNK_S = 15.0               # responsiveness of the stop flag / catalyst
 __all__ = ["Agent", "build_agent"]
 
 
+def _truthy(value: str) -> bool:
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
 def build_agent() -> "Agent":
     """Load settings/policy/calendar and wire a ready-to-run Agent."""
     settings = load_settings()
@@ -105,6 +111,21 @@ class Agent:
             print(f"[quaestor] receipts unavailable: {exc!r}", file=sys.stderr)
             self.receipts = None
         self.zk = ZkProver()  # fail-open by design: proofs are None when unavailable
+        # Sealed execution (Phase A): opt-in via QUAESTOR_SEALED so the normal week
+        # is never on the experimental path unless we choose it. When on, every
+        # cycle's real orders are placed inside a bulla cell over the tunnel.
+        self.sealed_executor: "SealedExecutor | None" = None
+        if _truthy(os.environ.get("QUAESTOR_SEALED", "")):
+            try:
+                from quaestor.sealed_exec import SealedExecutor
+                ex = SealedExecutor(settings, settings.receipts_dir)
+                if ex.available():
+                    self.sealed_executor = ex
+                else:
+                    print("[quaestor] QUAESTOR_SEALED set but bulla unavailable — "
+                          "falling back to normal execution", file=sys.stderr)
+            except Exception as exc:
+                print(f"[quaestor] sealed executor init failed: {exc!r}", file=sys.stderr)
         self._stop = False
 
     # ------------------------------------------------------------- portfolio io
@@ -240,6 +261,69 @@ class Agent:
             )
 
         return refresh
+
+    def _execute_sealed(
+        self, rec: CycleRecord, approved: list[tuple[TradeIntent, RiskVerdict]],
+        chains: dict[str, dict], zk_proofs: dict[str, Any], notes: list[str],
+    ) -> None:
+        """Build marketable payloads for the cycle's approved intents and place them
+        all inside ONE bulla cell over the sealed tunnel. Records one ExecutionReport
+        per intent from the cell's results; the cycle's sealed receipt path is set."""
+        exec_cfg = self.policy.get("execution", {}) if isinstance(self.policy, dict) else {}
+        payloads: list[dict[str, Any]] = []
+        cid_to_intent: dict[str, TradeIntent] = {}
+        for intent, _v in approved:
+            chain = chains.get(intent.underlying, {})
+            zk_prefix = ZkProver.commitment_prefix(zk_proofs.get(intent.intent_id))
+            work = replace_intent(intent)
+            try:  # cross the spread with a marketable limit; fall back to the decision price
+                work = replace_intent(intent, limit_price=orders_mod.marketable_limit(
+                    intent, chain, self.policy))
+            except Exception:
+                pass
+            try:
+                payload = orders_mod.build_order_payload(work, attempt=0, zk_prefix=zk_prefix)
+            except Exception as exc:
+                notes.append(f"sealed: payload build failed for {intent.intent_id}: {exc!r}")
+                continue
+            payloads.append(payload)
+            cid_to_intent[payload["client_order_id"]] = intent
+
+        if not payloads:
+            return
+        results, receipt_path = self.sealed_executor.execute_cycle(
+            rec.cycle_id, payloads,
+            poll_seconds=float(exec_cfg.get("repost_after_s", 8.0)),
+            poll_interval=float(exec_cfg.get("order_poll_interval_s", 1.5)),
+        )
+        if receipt_path is not None:
+            rec.receipt_path = str(receipt_path)
+            notes.append(f"sealed execution receipt: {receipt_path}")
+        else:
+            notes.append("sealed execution produced no receipt; orders may not have been placed")
+
+        for res in results:
+            cid = str(res.get("client_order_id", ""))
+            intent = cid_to_intent.get(cid)
+            report = ExecutionReport(
+                intent_id=intent.intent_id if intent else "",
+                client_order_id=cid,
+                order_id=str(res.get("order_id", "")),
+                status=str(res.get("status", "")),
+                filled_qty=float(res.get("filled_qty", 0) or 0),
+                filled_avg_price=float(res.get("filled_avg_price", 0) or 0),
+                request_ids=list(res.get("request_ids", []) or []),
+                error=str(res.get("error", "")),
+                raw={"sealed": True, "receipt": str(receipt_path) if receipt_path else ""},
+            )
+            rec.executions.append(report.to_dict())
+            rid = report.request_ids[0] if report.request_ids else ""
+            try:
+                self.audit.log_order(
+                    "execute_sealed", intent.to_dict() if intent else {"client_order_id": cid},
+                    report.to_dict(), rid)
+            except Exception:
+                pass
 
     def _execute(
         self, intent: TradeIntent, chain: dict[str, dict], zk_prefix: str = ""
@@ -469,15 +553,23 @@ class Agent:
                 notes.append(f"receipts.attested_cycle failed (continuing unsigned): {exc!r}")
 
         # -- step 6: execute approved intents ---------------------------------
+        approved = [(i, v) for i, v in judged if v.approved]
         for intent, verdict in judged:
             if not verdict.approved:
                 notes.append(
                     f"intent {intent.intent_id} rejected: {'; '.join(verdict.reasons) or 'unknown'}"
                 )
-                continue
-            zk_prefix = ZkProver.commitment_prefix(zk_proofs.get(intent.intent_id))
-            report = self._execute(intent, chains.get(intent.underlying, {}), zk_prefix)
-            rec.executions.append(report.to_dict())
+
+        if self.sealed_executor is not None and approved:
+            # Phase A: the whole week under seal — every real order for this cycle is
+            # placed from inside a hermetic cell over the mediated tunnel, producing
+            # ONE signed receipt that chains into the week-long sealed ledger.
+            self._execute_sealed(rec, approved, chains, zk_proofs, notes)
+        else:
+            for intent, _verdict in approved:
+                zk_prefix = ZkProver.commitment_prefix(zk_proofs.get(intent.intent_id))
+                report = self._execute(intent, chains.get(intent.underlying, {}), zk_prefix)
+                rec.executions.append(report.to_dict())
 
         # -- step 7: persist ---------------------------------------------------
         self._finish_cycle(rec, due_events if events_consumed else [], fired, notes)

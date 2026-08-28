@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>quaestor — red-team audit</title>
+<meta name="description" content="Four ways to fake an autonomous trading record, each caught by quaestor's signed, offline-verifiable audit layer.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:#0b0e15; --surface:#131826; --surface-2:#0f1420; --line:#232a3d;
+    --ink:#e8ecf6; --muted:#8b96ad; --faint:#5a6580;
+    --accent:#6a7cff; --verified:#35c98c; --forgery:#ff6459; --hash:#5fd6e4;
+    --sans:"IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg:#f5f7fb; --surface:#ffffff; --surface-2:#eef1f7; --line:#dde3ee;
+      --ink:#12151f; --muted:#5a6478; --faint:#8b94a8;
+      --accent:#4b5cf0; --verified:#0f9d63; --forgery:#d94434; --hash:#0f8fa6;
+    }
+  }
+  * { box-sizing:border-box; }
+  html { -webkit-text-size-adjust:100%; }
+  body {
+    margin:0; background:var(--bg); color:var(--ink);
+    font:15px/1.6 var(--sans); letter-spacing:-0.003em;
+    background-image:
+      radial-gradient(1200px 520px at 85% -8%, rgba(255,100,89,0.10), transparent 60%),
+      radial-gradient(900px 500px at 0% 0%, rgba(106,124,255,0.08), transparent 55%);
+    background-repeat:no-repeat;
+  }
+  a { color:var(--accent); text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  .wrap { max-width:940px; margin:0 auto; padding:40px 22px 72px; }
+
+  .brand { display:flex; align-items:center; gap:10px; color:var(--muted);
+    font:600 13px/1 var(--mono); letter-spacing:0.06em; text-transform:uppercase; }
+  .brand .dot { width:9px; height:9px; border-radius:50%; background:var(--forgery);
+    box-shadow:0 0 0 4px rgba(255,100,89,0.16); }
+
+  .hero { margin:26px 0 6px; }
+  .eyebrow { color:var(--forgery); font:600 12px/1 var(--mono); letter-spacing:0.16em;
+    text-transform:uppercase; margin:0 0 14px; }
+  .hero h1 { font-size:clamp(30px,5vw,50px); line-height:1.04; margin:0 0 16px;
+    letter-spacing:-0.024em; font-weight:600; max-width:18ch; }
+  .hero h1 .g { color:var(--verified); }
+  .hero p.lede { color:var(--muted); font-size:16.5px; margin:0 0 8px; max-width:66ch; }
+
+  .scorestrip { display:flex; align-items:center; gap:16px; flex-wrap:wrap;
+    margin:26px 0 4px; padding:18px 22px; border:1px solid var(--line);
+    border-radius:16px; background:var(--surface);
+    background-image:linear-gradient(90deg, rgba(53,201,140,0.08), transparent 70%); }
+  .scorestrip .big { font-size:34px; font-weight:600; letter-spacing:-0.02em;
+    color:var(--verified); font-variant-numeric:tabular-nums; }
+  .scorestrip .lab { color:var(--muted); font:600 12px/1.4 var(--mono);
+    letter-spacing:0.06em; text-transform:uppercase; }
+  .scorestrip.partial .big { color:var(--forgery); }
+
+  .ctx { color:var(--muted); font-size:14.5px; margin:22px 2px 6px; max-width:70ch; }
+  .ctx b { color:var(--ink); font-weight:600; }
+
+  section.vec { background:var(--surface); border:1px solid var(--line);
+    border-radius:18px; padding:22px 24px 24px; margin:20px 0; overflow:hidden; }
+  .vhead { display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; }
+  .vnum { font:600 13px/1 var(--mono); color:var(--faint); letter-spacing:0.10em; }
+  .vhead h2 { font-size:22px; margin:0; letter-spacing:-0.02em; font-weight:600; }
+  .vhead .spacer { flex:1 1 40px; }
+  .badge { display:inline-flex; align-items:center; gap:7px; padding:6px 13px;
+    border-radius:999px; font:600 12px/1 var(--mono); letter-spacing:0.04em; border:1px solid; }
+  .badge.caught { color:var(--verified); border-color:var(--verified);
+    background:rgba(53,201,140,0.10); }
+  .badge.missed { color:var(--forgery); border-color:var(--forgery);
+    background:rgba(255,100,89,0.10); }
+  .badge svg { width:13px; height:13px; }
+  .attack { color:var(--muted); font-size:14.5px; margin:12px 0 4px; }
+  .attack .tag { color:var(--forgery); font:600 11px/1 var(--mono); letter-spacing:0.08em;
+    text-transform:uppercase; margin-right:8px; }
+  .inputline { color:var(--faint); font:500 12px/1.4 var(--mono); margin:2px 0 14px; }
+
+  .step { margin:14px 0 0; border:1px solid var(--line); border-radius:12px;
+    background:var(--surface-2); overflow:hidden; }
+  .step .steptop { display:flex; align-items:center; gap:10px; padding:9px 13px;
+    border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  .pill { font:600 10.5px/1 var(--mono); letter-spacing:0.06em; text-transform:uppercase;
+    padding:5px 9px; border-radius:6px; border:1px solid; }
+  .pill.ok { color:var(--verified); border-color:var(--verified); background:rgba(53,201,140,0.10); }
+  .pill.bad { color:var(--forgery); border-color:var(--forgery); background:rgba(255,100,89,0.10); }
+  .step .cmd { font:12.5px/1.5 var(--mono); color:var(--hash); margin:0; flex:1 1 220px;
+    word-break:break-all; }
+  .step .exit { font:600 11px/1 var(--mono); color:var(--faint); white-space:nowrap; }
+  pre.out { margin:0; padding:13px 15px; font:12px/1.5 var(--mono); color:var(--ink);
+    white-space:pre; overflow-x:auto; background:transparent; }
+  .why { margin:16px 0 0; padding:13px 15px; border-radius:12px;
+    border:1px solid var(--line); background:rgba(53,201,140,0.05);
+    color:var(--muted); font-size:13.5px; line-height:1.6; }
+  .why b { color:var(--verified); font-weight:600; }
+  code { font-family:var(--mono); background:var(--surface-2); padding:1px 6px;
+    border-radius:5px; font-size:12px; }
+
+  .foot { color:var(--faint); font:500 12px/1.7 var(--mono); margin-top:34px;
+    padding-top:18px; border-top:1px solid var(--line); }
+  .foot b { color:var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="brand"><span class="dot"></span>quaestor · red-team audit</div>
+
+  <div class="hero">
+    <p class="eyebrow">Adversarial verification</p>
+    <h1>Everyone fixes tasks. <span class="g">We closed the harness.</span></h1>
+    <p class="lede">Four ways to fake an autonomous trading record — forge a number,
+      drop a losing cycle, run with the network open, fake a risk proof — each run
+      here for real against a signed quaestor receipt, and each one caught by the
+      same offline binaries a judge can run.</p>
+  </div>
+
+  <div class="scorestrip">
+    <span class="big">4 / 4</span>
+    <span class="lab">fraud vectors caught<br>real binaries · real receipt · attacks on /tmp copies</span>
+  </div>
+
+  <p class="ctx">The 2026 agent-benchmark trust crisis was never about whether an
+    agent could <b>do</b> the task — it was that nobody could tell a real result from
+    a doctored one. A logged number can be edited, a bad run can be deleted, a
+    "sealed" score can be produced with the network wide open, and a risk claim can
+    be asserted without proof. quaestor makes every one of those a <b>detectable
+    forgery</b>. Below, each attack is executed and then caught.</p>
+
+<section class="vec"><div class="vhead"><span class="vnum">VECTOR 01</span><h2>Forge a number</h2><span class="spacer"></span><span class="badge caught"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> CAUGHT</span></div><p class="attack"><span class="tag">The attack</span>Edit a winning number into a signed result receipt — the way a fabricated P&amp;L or exit code would be slipped in.</p><p class="inputline">receipt: sealed-minimal.json</p><div class="step"><div class="steptop"><span class="pill ok">INTACT</span><code class="cmd">$ /home/daniil/.cache/hack-target/release/bulla verify /tmp/rt/orig.json</code><span class="exit">exit 0</span></div><pre class="out">bulla verify /tmp/quaestor-red-team-report/orig.json
+  schema      bulla-receipt/v0
+  signature   ok    (key 638410c77502…)
+  body digest ok    64334563bc9a…
+  event chain ok    head=5d258f73a645…
+  ------------------------------------------------------------
+  intact      YES   (unforged + internally consistent)
+  seal held   YES   (hermetic: no egress + private root + deterministic)
+  ------------------------------------------------------------
+  command     python3 /work/in_cell_execute.py
+  policy      network=Deny deterministic=false git_hygiene=false wall_ms=28000
+  applied     net_ns=true user_ns=true pivot_root=true seccomp=true no_aslr=false fixed_env=false
+  git         no repo in work dir
+  outcome     exit=code:0 wall=10672ms   (solve phase)
+  egress      mediated · allowlist=[paper-api.alpaca.markets:443] (digest 38f47e473bec…) · 6 call(s) · log_head=9e6c52861c79…
+                ALLOW paper-api.alpaca.markets:443CONNECT  req=31f06e97c67c… resp=591e5c74c4c3… (6342B)
+                ALLOW paper-api.alpaca.markets:443CONNECT  req=682eddd6f34e… resp=59079ad67062… (6342B)
+                ALLOW paper-api.alpaca.markets:443CONNECT  req=78351edd299f… resp=8ec846549ded… (6342B)
+                ALLOW paper-api.alpaca.markets:443CONNECT  req=af79dec229c8… resp=5cf6088af198… (6342B)
+                ALLOW paper-api.alpaca.markets:443CONNECT  req=fff33e25feb9… resp=963b851c0df2… (6342B)
+                ALLOW paper-api.alpaca.markets:443CONNECT  req=0f08fda0736e… resp=8e28ec897ef6… (5472B)</pre></div>
+<div class="step"><div class="steptop"><span class="pill bad">TAMPER</span><code class="cmd">$ python3 -c 'flip body.outcome.exit_code on the copy'</code></div><pre class="out">outcome.exit_code: 0 -&gt; 42</pre></div>
+<div class="step"><div class="steptop"><span class="pill bad">SIGNATURE FAIL</span><code class="cmd">$ /home/daniil/.cache/hack-target/release/bulla verify /tmp/rt/forged.json</code><span class="exit">exit 2</span></div><pre class="out">bulla verify /tmp/quaestor-red-team-report/forged.json
+  schema      bulla-receipt/v0
+  signature   FAIL  (key 638410c77502…)
+  body digest FAIL  64334563bc9a…
+  event chain ok    head=5d258f73a645…
+  ------------------------------------------------------------
+  intact      NO    (unforged + internally consistent)
+  seal held   YES   (hermetic: no egress + private root + deterministic)
+  ------------------------------------------------------------
+  command     python3 /work/in_cell_execute.py
+  policy      network=Deny deterministic=false git_hygiene=false wall_ms=28000
+  applied     net_ns=true user_ns=true pivot_root=true seccomp=true no_aslr=false fixed_env=false
+  git         no repo in work dir
+  outcome     exit=code:42 wall=10672ms   (solve phase)
+  egress      mediated · allowlist=[paper-api.alpaca.markets:443] (digest 38f47e473bec…) · 6 call(s) · log_head=9e6c52861c79…
+                ALLOW paper-api.alpaca.markets:443CONNECT  req=31f06e97c67c… resp=591e5c74c4c3… (6342B)
+                ALLOW paper-api.alpaca.markets:443CONNECT  req=682eddd6f34e… resp=59079ad67062… (6342B)
+                ALLOW paper-api.alpaca.markets:443CONNECT  req=78351edd299f… resp=8ec846549ded… (6342B)
+                ALLOW paper-api.alpaca.markets:443CONNECT  req=af79dec229c8… resp=5cf6088af198… (6342B)
+                ALLOW paper-api.alpaca.markets:443CONNECT  req=fff33e25feb9… resp=963b851c0df2… (6342B)
+                ALLOW paper-api.alpaca.markets:443CONNECT  req=0f08fda0736e… resp=8e28ec897ef6… (5472B)
+  notes:
+    - body_digest does not match the receipt body
+    - Ed25519 signature does not verify against the body</pre></div><div class="why"><b>Caught —</b> The receipt body is Ed25519-signed. One flipped digit breaks the body digest and the signature — <code>bulla verify</code> rejects it.</div></section>
+<section class="vec"><div class="vhead"><span class="vnum">VECTOR 02</span><h2>Drop a losing cycle</h2><span class="spacer"></span><span class="badge caught"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> CAUGHT</span></div><p class="attack"><span class="tag">The attack</span>Delete a losing trade cycle from the run ledger to inflate the pass rate — cherry-pick the track record.</p><p class="inputline">ledger: ledger.jsonl (8 entries)</p><div class="step"><div class="steptop"><span class="pill ok">CHAIN OK</span><code class="cmd">$ /home/daniil/.cache/hack-target/release/bulla log /tmp/rt/ledger.jsonl</code><span class="exit">exit 0</span></div><pre class="out">bulla log /tmp/quaestor-red-team-report/ledger.jsonl
+  attempts    8
+  passed      6  (75%)
+  seal held   8/8
+  chain       ok  (tamper-evident: no attempt dropped, reordered, or edited)
+  ! nondeterministic: 6/8 attempts passed — a single lucky run is not pass@1
+  ------------------------------------------------------------
+    #0   PASS  seal=HELD   rcpt=c8d339fd0234…
+    #1   PASS  seal=HELD   rcpt=43debec84b23…
+    #2   PASS  seal=HELD   rcpt=bdff9f8f67e7…
+    #3   FAIL  seal=HELD   rcpt=41d2901a193f…
+    #4   PASS  seal=HELD   rcpt=296f81c990f8…
+    #5   FAIL  seal=HELD   rcpt=3582dcb76a97…
+    #6   PASS  seal=HELD   rcpt=bdb43c4cae87…
+    #7   PASS  seal=HELD   rcpt=c4092f7ae113…</pre></div>
+<div class="step"><div class="steptop"><span class="pill bad">DROP</span><code class="cmd">$ python3 -c 'delete the middle ledger entry on the copy'</code></div><pre class="out">dropped entry #4 of 8 (a mid-chain cycle)</pre></div>
+<div class="step"><div class="steptop"><span class="pill bad">CHAIN BROKEN</span><code class="cmd">$ /home/daniil/.cache/hack-target/release/bulla log /tmp/rt/ledger_trunc.jsonl</code><span class="exit">exit 2</span></div><pre class="out">bulla log /tmp/quaestor-red-team-report/ledger_trunc.jsonl
+  attempts    7
+  passed      5  (71%)
+  seal held   7/7
+  chain       BROKEN at seq 5 — an attempt was dropped, reordered, or edited
+  ------------------------------------------------------------
+    #0   PASS  seal=HELD   rcpt=c8d339fd0234…
+    #1   PASS  seal=HELD   rcpt=43debec84b23…
+    #2   PASS  seal=HELD   rcpt=bdff9f8f67e7…
+    #3   FAIL  seal=HELD   rcpt=41d2901a193f…
+    #5   FAIL  seal=HELD   rcpt=3582dcb76a97…
+    #6   PASS  seal=HELD   rcpt=bdb43c4cae87…
+    #7   PASS  seal=HELD   rcpt=c4092f7ae113…</pre></div><div class="why"><b>Caught —</b> Every ledger entry commits to the hash of the one before it. Removing an interior cycle makes the next entry's <code>prev</code> mismatch — <code>bulla log</code> reports the chain BROKEN at that seq.</div></section>
+<section class="vec"><div class="vhead"><span class="vnum">VECTOR 03</span><h2>Trade with the network on</h2><span class="spacer"></span><span class="badge caught"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> CAUGHT</span></div><p class="attack"><span class="tag">The attack</span>Produce a score with live egress open — phone home, fetch an oracle, exfiltrate — then pass it off as a sealed, hermetic run.</p><p class="inputline">cmd: /bin/echo hi (harness proof — payload is irrelevant)</p><div class="step"><div class="steptop"><span class="pill bad">SEAL BROKEN</span><code class="cmd">$ /home/daniil/.cache/hack-target/release/bulla run --allow-net --work /tmp/rt/net-cell --out /tmp/rt/net.json -- /bin/echo hi</code><span class="exit">exit 0</span></div><pre class="out">[bulla] SEAL BROKEN  exit=code:0 wall=5ms
+  cell: net_ns=false user/pid/mount_ns=true/true/true pivot_root=true seccomp=true no_aslr=true fixed_env=true
+  inputs: 0 file(s), root=e3b0c44298fc…
+  stdout sha256=98ea6e4f216f… (3B)   stderr sha256=e3b0c44298fc… (0B)
+  ! network was not isolated (egress possible) — not hermetically sealed
+  signed by 4ddb60a45258…  -&gt;  /tmp/quaestor-red-team-report/net.json
+  verify:  bulla verify /tmp/quaestor-red-team-report/net.json</pre></div>
+<div class="step"><div class="steptop"><span class="pill bad">SEAL BROKEN</span><code class="cmd">$ /home/daniil/.cache/hack-target/release/bulla verify /tmp/rt/net.json</code><span class="exit">exit 0</span></div><pre class="out">bulla verify /tmp/quaestor-red-team-report/net.json
+  schema      bulla-receipt/v0
+  signature   ok    (key 4ddb60a45258…)
+  body digest ok    93fde6eca084…
+  event chain ok    head=cc559596070a…
+  ------------------------------------------------------------
+  intact      YES   (unforged + internally consistent)
+  seal held   NO    (hermetic: no egress + private root + deterministic)
+  ------------------------------------------------------------
+  command     /bin/echo hi
+  policy      network=Allow deterministic=true git_hygiene=false wall_ms=60000
+  applied     net_ns=false user_ns=true pivot_root=true seccomp=true no_aslr=true fixed_env=true
+  git         no repo in work dir
+  outcome     exit=code:0 wall=5ms   (solve phase)
+  notes:
+    - network was not isolated (egress possible) — not hermetically sealed</pre></div>
+<div class="step"><div class="steptop"><span class="pill ok">SEAL HELD</span><code class="cmd">$ /home/daniil/.cache/hack-target/release/bulla run --work /tmp/rt/sealed-cell --out /tmp/rt/sealed.json -- /bin/echo hi</code><span class="exit">exit 0</span></div><pre class="out">[bulla] SEAL HELD  exit=code:0 wall=7ms
+  cell: net_ns=true user/pid/mount_ns=true/true/true pivot_root=true seccomp=true no_aslr=true fixed_env=true
+  inputs: 0 file(s), root=e3b0c44298fc…
+  stdout sha256=98ea6e4f216f… (3B)   stderr sha256=e3b0c44298fc… (0B)
+  signed by d12525054d3f…  -&gt;  /tmp/quaestor-red-team-report/sealed.json
+  verify:  bulla verify /tmp/quaestor-red-team-report/sealed.json</pre></div><div class="why"><b>Caught —</b> bulla records whether the network namespace was isolated. With <code>--allow-net</code> the receipt honestly reads SEAL BROKEN; only the isolated run is SEAL HELD. A score made with egress can never masquerade as sealed.</div></section>
+<section class="vec"><div class="vhead"><span class="vnum">VECTOR 04</span><h2>Fake a risk proof</h2><span class="spacer"></span><span class="badge caught"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> CAUGHT</span></div><p class="attack"><span class="tag">The attack</span>Claim every order's worst-case loss is under the hard cap without actually being under it — forge the risk attestation.</p><p class="inputline">cap: 2^16 = $65,536 worst-case max loss</p><div class="step"><div class="steptop"><span class="pill ok">PROVED</span><code class="cmd">$ zkrisk prove 12000 16 &gt; /tmp/rt/proof.json</code><span class="exit">exit 0</span></div><pre class="out">(RiskProof JSON written)</pre></div>
+<div class="step"><div class="steptop"><span class="pill ok">VERIFIES</span><code class="cmd">$ /home/daniil/.cache/hack-target/release/examples/zkrisk verify /tmp/rt/proof.json</code><span class="exit">exit 0</span></div><pre class="out">{"ok":true}</pre></div>
+<div class="step"><div class="steptop"><span class="pill bad">TAMPER</span><code class="cmd">$ python3 -c 'flip one nibble of proof hex'</code></div><pre class="out">proof[0]: 5 -&gt; 1</pre></div>
+<div class="step"><div class="steptop"><span class="pill bad">REJECTED</span><code class="cmd">$ /home/daniil/.cache/hack-target/release/examples/zkrisk verify /tmp/rt/proof_bad.json</code><span class="exit">exit 1</span></div><pre class="out">{"ok":false}</pre></div>
+<div class="step"><div class="steptop"><span class="pill bad">CANNOT PROVE</span><code class="cmd">$ /home/daniil/.cache/hack-target/release/examples/zkrisk prove 70000 16</code><span class="exit">exit 1</span></div><pre class="out">{"error":"proof does not verify (value &gt;= 2^cap_bits?)"}</pre></div><div class="why"><b>Caught —</b> Each order carries a Bulletproofs range proof that max loss &lt; 2^16 USD. Tamper the proof and it fails to verify; feed an over-cap value and <code>zkrisk prove</code> refuses to emit a passing proof at all.</div></section>
+
+  <p class="foot">
+    <b>Generated</b> 2026-08-28 23:22:52 UTC · every <span style="color:var(--hash)">$ command</span>
+    block above is real captured output from this run.<br>
+    <b>Binaries</b> bulla 0.1.0 · zkrisk (bulla-zk Bulletproofs) · verify any receipt
+    yourself with <code>bulla verify</code> / <code>bulla log</code> / <code>zkrisk verify</code>.<br>
+    <b>Provenance</b> built on RARS-oss/bulla — hermetic no-root receipts researched before the hackathon.
+  </p>
+
+</div>
+</body>
+</html>

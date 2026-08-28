@@ -1,106 +1,147 @@
-<p align="center"><b>quaestor</b> — an autonomous options-trading agent whose every decision is a cryptographically signed, independently verifiable receipt.</p>
+<h1 align="center">quaestor</h1>
+
+<p align="center"><b>An autonomous options-trading agent whose every trade is cryptographically signed, hermetically sealed, and independently verifiable.</b></p>
 
 <p align="center">
-  Alpaca AI Trading Agents Hackathon 2026 · paper trading · options-native · fully autonomous
+  <img src="https://img.shields.io/badge/tests-161%20passing-2f8f5b" alt="tests">
+  <img src="https://img.shields.io/badge/receipts-Ed25519%20signed-2f8f5b" alt="signed">
+  <img src="https://img.shields.io/badge/verify-offline%20%2F%20in--browser-2bc4b2" alt="verify">
+  <img src="https://img.shields.io/badge/trading-paper%20only-0e9c8c" alt="paper">
+  <img src="https://img.shields.io/badge/license-MIT-0e9c8c" alt="license">
 </p>
+
+<p align="center">Alpaca AI Trading Agents Hackathon 2026 · options-native · fully autonomous</p>
 
 ---
 
-## The claim other agents can't make
+## The claim every other agent can't make
 
-Every trading agent in this hackathon will tell you it has "risk management."
-**quaestor can prove it.** Each decision cycle runs through deterministic risk
-gates and is sealed in a hermetic [bulla](https://github.com/RARS-oss/bulla)
-cell that emits an **Ed25519-signed receipt** — policy digest, input hashes,
-decision bytes, event chain — appended to a **hash-chained ledger**. Delete or
-edit any cycle of the trading week and the chain breaks. Forge a number and the
-signature fails. And every order carries a **zero-knowledge Bulletproof** that
-its worst-case loss is under a hard cap — verifiable without revealing our sizing.
+Every agent in this hackathon will tell you it has risk management and a good week.
+**quaestor can prove it.** Every decision runs through deterministic risk gates and
+is executed **from inside a hermetic, no-root sandbox** that emits an **Ed25519-signed
+receipt** of the exact exchange conversation — hash-chained into a tamper-evident
+ledger and witnessed to an external anchor. Edit one number and the signature rejects
+it. Drop one losing cycle and the chain breaks.
 
-You don't have to trust our P&L story. You can check it:
+You don't have to trust our P&L. **You can verify it** — offline, in 30 seconds, with
+no credentials:
 
 ```bash
-make verify        # offline: every receipt's signature + ledger chain + ZK proofs
+make verify          # re-checks every receipt's signature + ledger chain, offline
 ```
+
+…or open [`dashboard/verifier.html`](dashboard/verifier.html) in any browser, paste a
+receipt, watch it verify — then change one character and watch it fail.
+
+---
+
+## 👩‍⚖️ For judges & reviewers — a guided tour
+
+The depth is in the repo. Here's the fastest path to the parts that matter:
+
+| You have | Do this | You'll see |
+|---|---|---|
+| **1 minute** | `make verify` (or open `dashboard/verifier.html`, click **Verify**) | Every signed receipt of the week re-checks, offline, no keys |
+| **3 minutes** | Open `dashboard/track-record.html`, click **Verify**, then **Tamper** | A provable agent P&L record; the signature catching a forgery live |
+| **5 minutes** | `bash scripts/red_team.sh` | The four ways you'd fake trading results — each caught |
+| **10 minutes** | Read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) + skim [`attested_alpaca/`](attested_alpaca/) | How any Alpaca agent adopts verifiable execution in a few lines |
+| **15 minutes** | Read [`patches/bulla/`](patches/bulla/) — the sealed-egress tunnel | We patched a Rust sandbox so an agent trades *inside* the seal |
+
+The boldest claim — *every trade placed from inside a cryptographically sealed cell* —
+is the easiest to check. That's the point.
+
+---
 
 ## What it does
 
-- **Autonomous options trading** on Alpaca's paper API: defined-risk debit
-  verticals on SPY/QQQ as the core flow, catalyst playbooks (ISM, ADP, NFP)
-  for convexity — all multi-leg (`mleg`) orders with signed net limit prices.
-- **Deterministic risk gates** (`quaestor/risk.py` + `configs/policy.yaml`):
-  per-trade loss caps, daily halt, concentration and spread-quality gates,
-  0DTE cutoffs, final-day auto-flatten. The policy file's sha256 is bound into
-  every verdict and receipt — changing the rules is visible in the audit trail.
-- **Signed execution receipts** (`quaestor/receipts.py`): each cycle's exact
-  input and decision bytes are attested inside a no-root hermetic Linux cell
-  (namespaces + pivot_root + seccomp) — `SEAL HELD`, signed, ledger-chained.
-- **ZK risk proofs** (`quaestor/zk.py`): per-order Bulletproofs range proof
-  ("max loss < 2^16 USD") with the Pedersen commitment prefix embedded in the
-  Alpaca `client_order_id` — the order on the exchange is bound to its proof.
-- **Idempotent execution** (`quaestor/broker.py`): marketable-limit orders with
-  cancel-and-repost, `client_order_id` lookup-before-retry, partial-fill
-  tolerance — built for Alpaca's paper fill model (NBBO-touch, random partials).
-- **Full audit trail** (`quaestor/audit.py`): the official
-  [alpaca-skills](https://github.com/alpacahq/alpaca-skills) `runs/` contract
-  (orders.json, order_log.csv, position snapshots), extended with receipts.
-- **Judge dashboard** (`dashboard/app.py`): live equity/decisions/receipts —
-  including a **Tamper Playground**: edit a real receipt and watch verification fail.
+- **Autonomous options trading** on Alpaca's paper API: defined-risk debit verticals on
+  SPY/QQQ as the core flow, catalyst playbooks (ISM, ADP, the Sep-4 NFP print) for
+  convexity — all multi-leg (`mleg`) orders with signed net limit prices.
+- **Deterministic risk gates** (`quaestor/risk.py` + `configs/policy.yaml`): per-trade
+  loss caps, daily & weekly halts, concentration and spread-quality gates, 0DTE cutoffs,
+  final-day auto-flatten. The policy file's **sha256 is bound into every receipt** — you
+  can't quietly loosen the rules without it showing in the audit trail.
+- **Sealed live trading** (`quaestor/sealed_exec.py`): each order is placed from inside a
+  hermetic no-root cell over a *mediated* egress tunnel — TLS terminates in the cell (keys
+  never reach the broker), the exchange transcript is hash-chained into the signed receipt,
+  the isolation seal stays **HELD**.
+- **Zero-knowledge risk proofs** (`quaestor/zk.py`): a Bulletproofs range proof per order
+  that its worst-case loss is under a hard cap, size hidden; the commitment rides inside the
+  Alpaca `client_order_id`.
+- **External anchor** (`quaestor/anchor.py`): the ledger head is witnessed to an append-only
+  log — so even truncating the newest losing day is caught.
+- **Verify anywhere**: `bulla verify` offline, or the same check compiled to **WebAssembly**
+  running entirely in a judge's browser (`dashboard/verifier.html`).
+- **Proof bundle** (`quaestor bundle`): packages the whole week — receipts + ledgers + anchor
+  + the WASM verifier + an index — for offline verification by anyone.
 
 ## Architecture
 
 ```
-        ┌────────────┐   ┌──────────┐   ┌───────────┐   ┌──────────────┐
- market │ data.py    │──▶│signals /  │──▶│ risk.py    │──▶│ broker.py    │──▶ Alpaca
- (IEX + │ universe.py│   │strategy   │   │ policy.yaml│   │ orders.py    │   paper API
- indic.)└────────────┘   └──────────┘   └─────┬─────┘   └──────┬───────┘
-                                              │                │
-                                        ┌─────▼────────────────▼─────┐
-                                        │ receipts.py — bulla cell    │
-                                        │ Ed25519 receipt · ledger    │
-                                        │ zk.py — Bulletproofs proof  │
-                                        └────────────────────────────┘
+        market          decide                 gate                 execute
+   ┌────────────┐   ┌────────────┐   ┌──────────────────┐   ┌──────────────────┐
+   │ data.py    │──▶│ signals /   │──▶│ risk.py           │──▶│ sealed_exec.py    │──▶ Alpaca
+   │ universe.py│   │ strategy    │   │ policy.yaml (hash)│   │  (inside a cell)  │   paper API
+   └────────────┘   └────────────┘   └────────┬─────────┘   └────────┬─────────┘
+                                              │                       │
+                                        ┌─────▼───────────────────────▼─────┐
+                                        │ signed receipt · ZK proof · ledger │
+                                        │ external anchor · WASM verifier    │
+                                        └────────────────────────────────────┘
 ```
 
-The agent loop (`agent.py`) runs every 5 minutes during market hours in WSL2.
-The Alpaca **CLI** (pinned v0.0.14) and **MCP server** cover the required
-integration surface; order execution goes through the Trading API with every
-`X-Request-ID` archived.
+The agent loop (`agent.py`) runs every 5 minutes during market hours in WSL2. The Alpaca
+**CLI** (pinned v0.0.14) and **MCP server** cover the required integration surface; orders
+go through the Trading API with every `X-Request-ID` archived.
 
 ## Quickstart
 
 ```bash
-# WSL2 Ubuntu (unprivileged user namespaces required for receipts)
-bash scripts/setup-wsl.sh          # sysctls, builds bulla/sbx, verifies toolchain
+# WSL2 Ubuntu (unprivileged user namespaces required for the sealed receipts)
+bash scripts/setup-wsl.sh          # sysctls, builds bulla/sbx, verifies the toolchain
 cp .env.example .env               # add your Alpaca PAPER keys (PK...)
+
 python -m quaestor status          # account + positions
-python -m quaestor once            # one decision cycle (mints a receipt)
-python -m quaestor loop            # autonomous mode
-python -m quaestor verify          # verify all receipts + ledger
-streamlit run dashboard/app.py     # judge dashboard
+python -m quaestor rehearse        # dress rehearsal on live data — no trading
+python -m quaestor once            # one decision cycle (mints a signed receipt)
+QUAESTOR_SEALED=1 python -m quaestor loop   # autonomous, every trade sealed
+
+python -m quaestor verify          # verify all receipts + the ledger
+python -m quaestor bundle          # export the offline proof bundle
+streamlit run dashboard/app.py     # judge dashboard (Agent / Receipts / Tamper / About)
 ```
 
-Trading runs **only** against `paper-api.alpaca.markets` — the config layer
-fail-closes if a live endpoint or `ALPACA_LIVE_TRADE` is ever detected.
+Trading runs **only** against `paper-api.alpaca.markets`; the config layer fail-closes if a
+live endpoint or `ALPACA_LIVE_TRADE` is ever detected.
 
-## Provenance (read this, judges)
+## It's a primitive, not just an app
 
-quaestor's agent/strategy/integration code was written during the hackathon
-(Aug 28 – Sep 4, 2026). It deliberately builds on two of our own pre-existing
-MIT-licensed research projects, both published before the event:
+The verifiable-execution layer is extracted as **[`attested-alpaca`](attested_alpaca/)** — a
+thin, agent-agnostic facade any Alpaca agent can adopt:
 
-- **[bulla](https://github.com/RARS-oss/bulla)** — hermetic no-root sandbox
-  emitting signed, offline-verifiable execution receipts (+ bulla-zk Bulletproofs).
-- **[sbx](https://github.com/RARS-oss/sbx)** — hermetic executor returning typed
-  verdicts to coding agents (used in our dev loop for this project).
+```python
+from attested_alpaca import AttestedAlpaca
+aa = AttestedAlpaca(api_key, secret_key)                 # paper by default
+order = aa.submit_sealed(payload, prove_risk_usd=250.0)  # placed inside a sealed cell
+assert aa.verify(order.receipt_path)                     # signature + seal + chain
+```
 
-That's the point: verifiable governance infrastructure we researched for AI
-agents, applied to the place it matters most — an autonomous agent that trades.
+This is the trust primitive an **agent marketplace** or **copy-trading of AI agents** would
+build on: a provable, portable track record. Follow, fund, or audit an autonomous agent on
+the strength of a signature — not its operator's word. See
+[`examples/minimal_agent.py`](examples/minimal_agent.py).
+
+## Provenance
+
+quaestor's agent, strategy, and integration code was written during the hackathon
+(Aug 28 – Sep 4 2026). It deliberately builds on two of our own pre-existing MIT-licensed
+research projects, **bulla** (hermetic sandbox + signed receipts) and **sbx** (typed-verdict
+executor, used in our dev loop) — verifiable-governance infrastructure we researched for AI
+agents, now pointed at the highest-stakes agent use case there is: money.
 
 ## Disclosures
 
-Not investment advice. Options trading involves significant risk and is not
-suitable for all investors. This project runs exclusively in Alpaca's paper
-trading environment — simulated results do not represent actual trading. See
-[Alpaca's disclosures](https://alpaca.markets/disclosures) and
-[Characteristics and Risks of Standardized Options](https://www.theocc.com/company-information/documents-and-archives/options-disclosure-document).
+Not investment advice. Options trading involves significant risk and is not suitable for all
+investors. This project runs exclusively in Alpaca's paper-trading environment — simulated
+results do not represent actual trading. See [Alpaca's disclosures](https://alpaca.markets/disclosures)
+and [Characteristics and Risks of Standardized Options](https://www.theocc.com/company-information/documents-and-archives/options-disclosure-document).

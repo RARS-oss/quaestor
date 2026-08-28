@@ -30,6 +30,7 @@ from quaestor.models import AccountSnapshot
 ET = ZoneInfo("America/New_York")
 
 _DEFAULT_DAILY_LOSS_HALT_PCT = 15.0
+_DEFAULT_WEEKLY_LOSS_HALT_PCT = 30.0
 _OCC_ROOT_RE = re.compile(r"^[A-Za-z]+")
 
 
@@ -62,6 +63,7 @@ class PortfolioState:
         self.fired_events: set[str] = set()
         self.realized_pnl_today: float = 0.0
         self.halted_today: bool = False
+        self.halted_week: bool = False   # latched for the REST OF THE CONTEST, never reset
         self.day_pnl_pct: float = 0.0
         self.week_pnl_pct: float = 0.0
         self._day_key: str = ""       # ET calendar date "YYYY-MM-DD"
@@ -111,6 +113,15 @@ class PortfolioState:
         if self.day_pnl_pct <= -halt_pct:
             self.halted_today = True   # latched: stays halted until the ET day rolls
 
+        weekly_halt_pct = _num(
+            self.policy.get("account", {}).get("weekly_loss_halt_pct"),
+            _DEFAULT_WEEKLY_LOSS_HALT_PCT,
+        )
+        if self.week_pnl_pct <= -weekly_halt_pct:
+            # "Hard stop for the rest of the contest": latched forever — a bounce
+            # back above the threshold must NOT resume trading.
+            self.halted_week = True
+
         self._last_account = account
         self.save()
 
@@ -130,13 +141,30 @@ class PortfolioState:
             exposure[root] = exposure.get(root, 0.0) + abs(_num(pos.get("market_value")))
         return exposure
 
+    def strategy_position_count(self, account: AccountSnapshot) -> int:
+        """Count STRATEGY positions, not option leg rows.
+
+        Alpaca returns one position row per contract, so a 2-leg vertical is 2 rows.
+        Legs of every playbook structure (vertical, straddle, single) share the same
+        (underlying root, expiry), so distinct (root, YYMMDD) pairs count strategies.
+        """
+        keys = set()
+        for pos in self.option_positions(account):
+            sym = str(pos.get("symbol") or "")
+            if len(sym) >= 15:
+                keys.add((occ_root(sym), sym[-15:-9]))
+            else:
+                keys.add((sym, ""))
+        return len(keys)
+
     def to_state_dict(self) -> dict[str, Any]:
         """Exactly the portfolio_state shape risk.judge() consumes."""
         account = self._last_account
         return {
             "halted_today": self.halted_today,
+            "halted_week": self.halted_week,
             "day_pnl_pct": self.day_pnl_pct,
-            "open_position_count": len(self.option_positions(account)) if account else 0,
+            "open_position_count": self.strategy_position_count(account) if account else 0,
             "underlying_exposure": self.underlying_exposure(account) if account else {},
             "week_pnl_pct": self.week_pnl_pct,
         }
@@ -151,6 +179,7 @@ class PortfolioState:
             "fired_events": sorted(self.fired_events),
             "realized_pnl_today": self.realized_pnl_today,
             "halted_today": self.halted_today,
+            "halted_week": self.halted_week,
             "day_pnl_pct": self.day_pnl_pct,
             "week_pnl_pct": self.week_pnl_pct,
             "day_key": self._day_key,
@@ -184,6 +213,7 @@ class PortfolioState:
         state.fired_events = {str(t) for t in data.get("fired_events") or []}
         state.realized_pnl_today = _num(data.get("realized_pnl_today"))
         state.halted_today = bool(data.get("halted_today", False))
+        state.halted_week = bool(data.get("halted_week", False))
         state.day_pnl_pct = _num(data.get("day_pnl_pct"))
         state.week_pnl_pct = _num(data.get("week_pnl_pct"))
         state._day_key = str(data.get("day_key") or "")

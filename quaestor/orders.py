@@ -158,12 +158,17 @@ def build_order_payload(intent: TradeIntent, attempt: int, zk_prefix: str = "") 
 
     if len(legs) == 1:
         leg = legs[0]
-        if limit <= 0:
+        # Project-wide convention: intents carry SIGNED net prices (sell-to-close a
+        # long = negative). Alpaca's single-leg limit_price is UNSIGNED (direction
+        # rides on side/position_intent), so we normalize here at the API boundary.
+        if limit == 0:
+            raise ValueError("single-leg limit_price must be nonzero")
+        if limit < 0 and leg.side is Side.BUY:
             raise ValueError(
-                f"single-leg limit_price must be > 0, got {limit} "
-                "(signed net prices apply to mleg orders only)"
+                f"negative limit_price {limit} on a BUY leg: signed-net credit "
+                "prices only make sense on SELL legs"
             )
-        price = _fmt_price(limit)
+        price = _fmt_price(abs(limit))
         if price == "0.00":
             raise ValueError(f"limit_price {limit} rounds to $0.00")
         return {
@@ -270,8 +275,13 @@ def marketable_limit(intent: TradeIntent, chain: dict[str, dict], policy: dict) 
         touch = _touch(chain, leg)
         raw = touch + buffer if leg.side is Side.BUY else touch - buffer
         price = _to_cents(raw)
-        if price < _CENT:  # a sell into a thin bid must still be a positive limit
+        if price < _CENT:  # a sell into a thin bid must still be a positive magnitude
             price = _CENT
+        # Preserve the intent's signed-net convention: a sell-to-close intent carries
+        # a negative limit; flipping it positive here would make broker._requote and
+        # cli.py's sign guards discard every requote (stale prices on reposts).
+        if intent.limit_price < 0:
+            return float(-price)
         return float(price)
 
     buffer = Decimal(str(execution.get("mleg_buffer_usd", 0.05)))

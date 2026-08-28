@@ -271,9 +271,22 @@ def _catalyst_straddles(ctx: Context) -> list[TradeIntent]:
 # --- playbook 3: exit management ---------------------------------------------
 
 def _exit_intents(ctx: Context, all_cash: bool) -> list[TradeIntent]:
+    """Exit management. Spreads exit as ONE mleg order (both legs reversed) —
+    per-leg exits would strand the loser or leave a naked short the account
+    cannot hold (Alpaca 403s an uncovering sell). Residual unpaired positions
+    use the single-leg path, shorts first (buy_to_close before sell_to_close)."""
     out: list[TradeIntent] = []
     now = _as_et(ctx.now)
-    for pos in _option_positions(ctx.account.positions):
+    pairs, singles = _pair_spreads(_option_positions(ctx.account.positions))
+
+    for long_pos, short_pos in pairs:
+        intent = _spread_close_intent(ctx, long_pos, short_pos, now, all_cash)
+        if intent is not None:
+            out.append(intent)
+
+    # Shorts first: a buy_to_close must never queue behind a sell that would
+    # temporarily uncover it.
+    for pos in sorted(singles, key=lambda p: _num(p.get("qty")) or 0.0):
         plpc = _pos_plpc(pos)
         reason = ""
         if all_cash:
@@ -290,6 +303,125 @@ def _exit_intents(ctx: Context, all_cash: bool) -> list[TradeIntent]:
         if intent is not None:
             out.append(intent)
     return out
+
+
+def _pair_spreads(
+    positions: list[dict],
+) -> tuple[list[tuple[dict, dict]], list[dict]]:
+    """Match long and short option positions into vertical-spread pairs.
+
+    Alpaca has no spread-position object — a vertical opened as one mleg order
+    comes back as two independent rows. Legs of our verticals share (root,
+    expiry, type) with opposite signs, so pair within those groups (sorted by
+    strike for determinism). Unpairable rows are returned as singles."""
+    groups: dict[tuple[str, str, str], list[dict]] = {}
+    singles: list[dict] = []
+    for pos in positions:
+        meta = _occ_meta(str(pos.get("symbol") or ""))
+        if meta is None:
+            singles.append(pos)
+            continue
+        key = (meta["root"], meta["expiry"].isoformat(), meta["type"])
+        groups.setdefault(key, []).append(pos)
+
+    pairs: list[tuple[dict, dict]] = []
+    for rows in groups.values():
+        longs = sorted((p for p in rows if (_num(p.get("qty")) or 0.0) > 0),
+                       key=lambda p: str(p.get("symbol")))
+        shorts = sorted((p for p in rows if (_num(p.get("qty")) or 0.0) < 0),
+                        key=lambda p: str(p.get("symbol")))
+        n = min(len(longs), len(shorts))
+        pairs.extend(zip(longs[:n], shorts[:n]))
+        singles.extend(longs[n:])
+        singles.extend(shorts[n:])
+    return pairs, singles
+
+
+def _spread_close_intent(
+    ctx: Context, long_pos: dict, short_pos: dict, now: datetime, all_cash: bool
+) -> TradeIntent | None:
+    """One mleg CLOSE for a paired vertical, judged on SPREAD-level P&L."""
+    long_sym = str(long_pos.get("symbol") or "")
+    short_sym = str(short_pos.get("symbol") or "")
+    meta = _occ_meta(long_sym)
+    if meta is None:
+        return None
+    units = min(abs(int(_num(long_pos.get("qty")) or 0)),
+                abs(int(_num(short_pos.get("qty")) or 0)))
+    if units < 1:
+        return None
+
+    # Spread-level economics per unit (contract = 100 shares).
+    net_cost = (_num(long_pos.get("avg_entry_price")) or 0.0) - \
+               (_num(short_pos.get("avg_entry_price")) or 0.0)
+    long_q = _find_quote(ctx.chains or {}, long_sym, meta["root"])
+    short_q = _find_quote(ctx.chains or {}, short_sym, meta["root"])
+    long_touch = _first_price(long_q.get("bid"), _mid(long_q), long_q.get("last"),
+                              long_pos.get("current_price"))
+    short_touch = _first_price(short_q.get("ask"), _mid(short_q), short_q.get("last"),
+                               short_pos.get("current_price"))
+    if long_touch is None or short_touch is None:
+        # No usable quotes: fall back to per-unit net from position market values.
+        mv = (_num(long_pos.get("market_value")) or 0.0) + \
+             (_num(short_pos.get("market_value")) or 0.0)
+        net_value = mv / (100.0 * units) if units else None
+    else:
+        net_value = long_touch - short_touch
+
+    spread_plpc: float | None = None
+    if net_value is not None and net_cost > 0:
+        spread_plpc = (net_value - net_cost) / net_cost
+
+    is_0dte = meta["expiry"] == now.date()
+    reason = ""
+    if all_cash:
+        reason = "ALL_CASH: final-day flatten before submission deadline"
+    elif spread_plpc is not None and spread_plpc <= STOP_PLPC:
+        reason = f"stop: spread {spread_plpc:+.0%} <= -50% of debit"
+    elif spread_plpc is not None and spread_plpc >= TARGET_PLPC:
+        reason = f"target: spread {spread_plpc:+.0%} >= +100% of debit"
+    elif is_0dte and _near_0dte_flatten(ctx.policy, now):
+        reason = f"0DTE flatten window before {_flat_0dte_str(ctx.policy)} ET"
+    if not reason:
+        return None
+
+    # Signed net for the close: receive long_touch, pay short_touch. Receiving
+    # (normal debit-vertical close) => credit => negative limit.
+    if long_touch is not None and short_touch is not None:
+        net_close = round(long_touch - short_touch, 2)
+    elif net_value is not None:
+        net_close = round(net_value, 2)
+    else:
+        return None
+    limit = -max(0.01, net_close) if net_close > 0 else max(0.01, -net_close)
+
+    legs = [
+        Leg(long_sym, Side.SELL, 1, PositionIntent.SELL_TO_CLOSE),
+        Leg(short_sym, Side.BUY, 1, PositionIntent.BUY_TO_CLOSE),
+    ]
+    snapshot: dict[str, Any] = {
+        "reason": reason,
+        "net_cost": net_cost,
+        "net_value": net_value,
+        "long_symbol": long_sym,
+        "short_symbol": short_sym,
+    }
+    if spread_plpc is not None:
+        snapshot["spread_plpc"] = spread_plpc
+    return TradeIntent(
+        underlying=meta["root"],
+        structure=Structure.CLOSE,
+        legs=legs,
+        qty=units,
+        limit_price=limit,
+        thesis=f"CLOSE spread {long_sym}/{short_sym} x{units}: {reason}",
+        # Closing at a debit costs that debit; closing at a credit risks ~nothing.
+        max_loss_usd=round((limit if limit > 0 else 0.01) * 100.0 * units, 2),
+        catalyst_tag="",
+        is_0dte=is_0dte,
+        expiry=meta["expiry"].isoformat(),
+        signal_snapshot=snapshot,
+    )
 
 
 def _close_intent(ctx: Context, pos: dict, reason: str, plpc: float | None) -> TradeIntent | None:

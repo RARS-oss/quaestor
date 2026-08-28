@@ -155,13 +155,20 @@ def cmd_status() -> int:
     account = broker.account_snapshot()
 
     day_open: float | None = None
+    stale_day = ""
     state_path = settings.runs_dir / "portfolio_state.json"
     if state_path.exists():
         try:
+            from quaestor import clock
             from quaestor.portfolio import PortfolioState
             state = PortfolioState.load(state_path)
             candidate = _f(getattr(state, "day_open_equity", 0.0))
-            day_open = candidate if candidate > 0 else None
+            saved_day = str(getattr(state, "_day_key", ""))
+            today_et = clock.now_et().date().isoformat()
+            if candidate > 0 and saved_day == today_et:
+                day_open = candidate
+            else:
+                stale_day = saved_day  # state predates today: Friday's open != today's
         except Exception:
             day_open = None
 
@@ -180,7 +187,9 @@ def cmd_status() -> int:
             ["today P&L", f"{_money(pnl)} ({pnl / day_open * 100.0:+.2f}%)"]
         )
     else:
-        account_rows.append(["today P&L", "n/a (no portfolio state yet)"])
+        detail = f"state from {stale_day}, no cycle yet today" if stale_day \
+            else "no portfolio state yet"
+        account_rows.append(["today P&L", f"n/a ({detail})"])
     _render_table("quaestor account", ["field", "value"], account_rows)
 
     positions = [p for p in list(account.positions or []) if isinstance(p, dict)]
@@ -363,6 +372,10 @@ def cmd_flatten() -> int:
         parsed = _occ(str(pos.get("symbol", "")))
         root = str(parsed.get("root")) if parsed else str(pos.get("symbol", ""))
         exposure[root] = exposure.get(root, 0.0) + abs(_f(pos.get("market_value")))
+    strategy_keys = set()
+    for pos in positions:
+        sym = str(pos.get("symbol") or "")
+        strategy_keys.add((sym[-15:-9] if len(sym) >= 15 else "", _occ(sym) and _occ(sym).get("root")))
     portfolio_state: dict[str, Any] = {
         "day_open_equity": day_open,
         "week_open_equity": day_open,
@@ -370,6 +383,8 @@ def cmd_flatten() -> int:
         "halted_today": halted,
         "fired_events": [],
         "open_option_positions": positions,
+        # The key risk.judge reads (strategy count), plus the legacy raw row count:
+        "open_position_count": len(strategy_keys),
         "open_positions_count": len(positions),
         "underlying_exposure": exposure,
     }

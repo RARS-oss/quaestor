@@ -262,9 +262,14 @@ class Broker:
         last_order: dict[str, Any] = {}
 
         try:
-            self.cancel_opposing(sorted({leg.symbol for leg in intent.legs}))
+            washed = self.cancel_opposing(sorted({leg.symbol for leg in intent.legs}))
         except (BrokerAPIError, httpx.HTTPError) as exc:
+            washed = []
             report.error = _append_err(report.error, f"wash-guard: {exc}")
+        if washed:
+            # Alpaca cancels are async (pending_cancel); submitting while an opposing
+            # order is still open draws a wash-trade 403. Wait for terminal states.
+            self._await_order_ids_terminal(washed, poll_s)
 
         attempt = 0
         while attempt <= max_reposts:
@@ -296,6 +301,12 @@ class Broker:
                 break
 
             report.order_id = str(order.get("id") or report.order_id)
+            report.attempts_log.append({
+                "attempt": attempt,
+                "client_order_id": cid,
+                "limit_price": work.limit_price,
+                "qty": work.qty,
+            })
             order = self._poll_until_terminal_or(cid, order, repost_after_s, poll_s)
             last_order = order
             status = str(order.get("status", ""))
@@ -340,6 +351,15 @@ class Broker:
             if intent.qty - int(total_filled) <= 0:
                 report.status = "filled"
                 break
+            if str(final.get("status", "")) not in TERMINAL_ORDER_STATUSES:
+                # Cancel unconfirmed — the prior marketable day order may still fill.
+                # Never stack a second same-side order on top of it (over-fill risk
+                # beyond the risk-approved qty). Leave it working, report honestly.
+                report.status = ("partially_filled" if total_filled > 0
+                                 else (str(final.get("status")) or "accepted"))
+                report.error = _append_err(
+                    report.error, "cancel unconfirmed; repost suppressed to avoid over-fill")
+                break
             attempt += 1
 
         if not report.status:
@@ -368,6 +388,7 @@ class Broker:
         cid = str(payload.get("client_order_id", ""))
         rate_tries = 0
         net_tries = 0
+        wash_tries = 0
         while True:
             try:
                 order, _rid = self.submit(payload)
@@ -381,6 +402,15 @@ class Broker:
                         else min(_DEFAULT_RETRY_AFTER_S * rate_tries, 10.0)
                     time.sleep(delay)
                     continue
+                if exc.status_code == 403 and "wash" in str(exc.message).lower():
+                    # Wash-trade 403: an opposing order is still mid-cancel. The POST
+                    # created no order, so the same client_order_id is safe to retry
+                    # exactly once after a short settle wait.
+                    wash_tries += 1
+                    if wash_tries <= 1:
+                        time.sleep(_DEFAULT_RETRY_AFTER_S)
+                        continue
+                    raise TerminalOrderError(exc.status_code, exc.message) from exc
                 if exc.status_code in (403, 422):
                     raise TerminalOrderError(exc.status_code, exc.message) from exc
                 # Unexpected status (e.g. 500): the order may or may not exist — check.
@@ -441,6 +471,31 @@ class Broker:
                 return current
             time.sleep(poll_s)
         return current
+
+    def _await_order_ids_terminal(self, order_ids: list[str], poll_s: float) -> bool:
+        """Wait (bounded) until every id reaches a terminal status. True when all did.
+
+        Used after the wash-trade guard: Alpaca cancels are asynchronous, and a
+        submit racing a pending_cancel opposing order draws a 403."""
+        pending = {oid for oid in order_ids if oid}
+        for _ in range(_CANCEL_SETTLE_POLLS):
+            if not pending:
+                return True
+            done: set[str] = set()
+            for oid in pending:
+                try:
+                    resp = self._request("GET", f"/v2/orders/{oid}", allow={404})
+                    if resp.status_code == 404:
+                        done.add(oid)
+                        continue
+                    if str(resp.json().get("status", "")) in TERMINAL_ORDER_STATUSES:
+                        done.add(oid)
+                except (BrokerAPIError, httpx.HTTPError):
+                    pass  # transient; re-check next pass
+            pending -= done
+            if pending:
+                time.sleep(poll_s)
+        return not pending
 
     @staticmethod
     def _maybe_refresh_chain(chain_refresh: Callable[[], dict[str, Any]] | None,

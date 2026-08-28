@@ -86,6 +86,11 @@ class Agent:
     def __init__(self, settings: Settings, policy: dict, calendar: dict) -> None:
         self.settings = settings
         self.policy = policy
+        # Honor check_paper_gate's documented contract: the gate re-asserts the
+        # ACTUAL endpoint inside every receipt. (Safe: policy["digest"] was computed
+        # over raw file bytes in load_policy, before this injection.)
+        self.policy["trading_base"] = str(settings.trading_base)
+        self.policy["live_trade"] = not bool(settings.paper)
         self.calendar = calendar
         self.data = MarketData(settings)
         self.broker = Broker(settings)
@@ -104,15 +109,16 @@ class Agent:
     # ------------------------------------------------------------- portfolio io
 
     def _load_portfolio(self) -> PortfolioState:
+        # Policy must reach PortfolioState so halt latches use policy.yaml's
+        # thresholds, not the module's hardcoded defaults.
         try:
-            return PortfolioState.load(self._portfolio_path)
+            return PortfolioState.load(self._portfolio_path, self.policy)
         except Exception:
             pass
         try:
-            return PortfolioState()
+            return PortfolioState(self._portfolio_path, self.policy)
         except TypeError:
-            # fallback if PortfolioState has no defaults: field order per spec
-            return PortfolioState(0.0, 0.0, set(), 0.0, False)  # type: ignore[call-arg]
+            return PortfolioState()  # last-resort defaults
 
     def _save_portfolio(self, notes: list[str]) -> None:
         try:
@@ -184,14 +190,29 @@ class Agent:
                 exposure = {}
         except Exception:
             exposure = {}
+        # Count STRATEGY positions (a 2-leg vertical = 1), not option leg rows.
+        try:
+            strategy_count = int(pf.strategy_position_count(account))
+        except Exception:
+            keys = set()
+            for p in opt_positions:
+                sym = str(p.get("symbol") or "")
+                keys.add((sym[:1], sym[-15:-9]) if len(sym) >= 15 else (sym, ""))
+            strategy_count = len(keys)
         return {
             "day_open_equity": float(grab("day_open_equity", account.equity) or account.equity),
             "week_open_equity": float(grab("week_open_equity", account.equity) or account.equity),
             "realized_pnl_today": float(grab("realized_pnl_today", 0.0) or 0.0),
             "halted_today": bool(grab("halted_today", False)),
+            "halted_week": bool(grab("halted_week", False)),
+            # The keys risk.judge actually reads (day_pnl_pct/week_pnl_pct are
+            # populated by portfolio.refresh earlier in the cycle):
+            "day_pnl_pct": float(grab("day_pnl_pct", 0.0) or 0.0),
+            "week_pnl_pct": float(grab("week_pnl_pct", 0.0) or 0.0),
+            "open_position_count": strategy_count,
             "fired_events": sorted(str(t) for t in self._fired_events()),
             "open_option_positions": opt_positions,
-            "open_positions_count": len(opt_positions),
+            "open_positions_count": len(opt_positions),  # legacy: raw leg-row count
             "underlying_exposure": exposure,
         }
 
@@ -279,7 +300,9 @@ class Agent:
             notes.append(f"broker.account_snapshot failed: {exc!r}")
         if account is None:
             notes.append("no account snapshot -> skipping decision steps this cycle")
-            self._finish_cycle(rec, due_events, fired, notes)
+            # Pass [] so due catalysts are NOT marked fired: strategy never saw
+            # them, and a transient API failure must not eat a playbook forever.
+            self._finish_cycle(rec, [], fired, notes)
             return rec
         try:
             self.portfolio.refresh(account, now)
@@ -375,7 +398,9 @@ class Agent:
                 due_events=due_events,
             )
             intents = list(strategy_mod.decide(ctx))
+            events_consumed = True  # strategy actually saw due_events — safe to mark fired
         except Exception as exc:
+            events_consumed = False
             notes.append(f"strategy.decide failed: {exc!r}")
         for intent in intents:
             try:
@@ -454,7 +479,7 @@ class Agent:
             rec.executions.append(report.to_dict())
 
         # -- step 7: persist ---------------------------------------------------
-        self._finish_cycle(rec, due_events, fired, notes)
+        self._finish_cycle(rec, due_events if events_consumed else [], fired, notes)
         return rec
 
     def _finish_cycle(

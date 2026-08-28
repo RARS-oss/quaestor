@@ -2,7 +2,7 @@
 
 What it does
 ------------
-Renders three tabs over the on-disk audit contract written by the agent:
+Renders four tabs over the on-disk audit contract written by the agent:
   1. "Agent"    — equity curve, realized P&L, open positions and the order log,
                   read from runs/<latest-session>/{summary.json, positions_snapshot.json,
                   order_log.csv}.
@@ -10,7 +10,10 @@ Renders three tabs over the on-disk audit contract written by the agent:
                   exit code, stdout sha256 prefix, signing-key prefix) plus the
                   hash-chained ledger head from receipts/ledger.jsonl, and an
                   on-demand `bulla verify` runner (WSL bridge, failure-tolerant).
-  3. "About"    — the pitch, the verifiable-agent story, the hackathon requirement
+  3. "🔨 Tamper Playground" — a judge can edit a signed receipt (or a ZK risk
+                  proof) in a textarea and re-verify: the original passes, any
+                  forged byte is caught by `bulla verify` / `zkrisk verify`.
+  4. "About"    — the pitch, the verifiable-agent story, the hackathon requirement
                   checklist, and the mandatory Alpaca risk disclosure.
 
 Alpaca facts this module encodes
@@ -38,6 +41,7 @@ import json
 import os
 import shlex
 import subprocess
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -486,6 +490,266 @@ def _render_receipts_tab() -> None:
                 st.code(text, language=None)
 
 
+# ------------------------------------------- 🔨 Tamper Playground tab (WSL bridge)
+# POSIX-side binary paths (inside WSL on Windows; local home on Linux/WSL) — the
+# same bridge contract as quaestor/receipts.py: `~`-headed argv[0] is left
+# unquoted so `bash -lc` expands it to the WSL home.
+BULLA_BIN: str = "~/.cache/hack-target/release/bulla"
+ZKRISK_BIN: str = "~/.cache/hack-target/release/examples/zkrisk"
+WSL_DISTRO: str = "Ubuntu"
+RECEIPT_LITE_SCHEMA: str = "quaestor.receipt-lite.v1"
+_ZK_DEMO_KEY: str = "tamper_zk_demo_proof"
+_ZK_KEYS: tuple[str, ...] = ("cap_bits", "commitment", "proof")
+_TOOLCHAIN_HINT: str = (
+    "The tamper playground needs the WSL toolchain: the `bulla` and `zkrisk` "
+    "binaries built at ~/.cache/hack-target/release inside WSL (Ubuntu). "
+    "They are unreachable from here, so live verification is disabled — the "
+    "receipts themselves are still on disk and verifiable from any machine "
+    "with the binaries."
+)
+
+
+def _invoke(argv: list[str], stdin: str | None = None) -> tuple[int | None, str, str]:
+    """Run a POSIX argv (argv[0] = binary path inside WSL/home) and return
+    ``(returncode, stdout, stderr)``.
+
+    Same direct-vs-bridge logic as quaestor/receipts.py: on Windows the argv is
+    wrapped as ``["wsl", "-d", "Ubuntu", "--", "bash", "-lc", <cmd>]`` (every
+    token shell-quoted except a ``~``-headed argv[0]); on Linux/WSL the binary
+    is called directly. ``returncode is None`` means the toolchain itself was
+    unreachable (stderr then carries a human explanation) — callers must render
+    that as st.info, never a traceback.
+    """
+    if os.name == "nt":
+        head, *rest = argv
+        head_s = head if head.startswith("~") else shlex.quote(head)
+        shell_cmd = " ".join([head_s, *(shlex.quote(a) for a in rest)])
+        cmd: list[str] = ["wsl", "-d", WSL_DISTRO, "--", "bash", "-lc", shell_cmd]
+    else:
+        binary = Path(argv[0]).expanduser()
+        if not binary.exists():
+            return None, "", f"binary not found at {binary}"
+        cmd = [str(binary), *argv[1:]]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True,
+                              timeout=VERIFY_TIMEOUT_S, input=stdin)
+    except FileNotFoundError:
+        return None, "", "WSL bridge unavailable (`wsl` not on PATH)"
+    except subprocess.TimeoutExpired:
+        return None, "", f"verifier timed out after {VERIFY_TIMEOUT_S:.0f}s"
+    except OSError as exc:
+        return None, "", f"could not launch verifier: {exc}"
+    if proc.returncode == 127:  # bash -lc: command not found inside WSL
+        return None, "", ((proc.stderr or proc.stdout).strip()
+                          or "binary not found inside WSL (exit 127)")
+    return proc.returncode, proc.stdout or "", proc.stderr or ""
+
+
+def _invoke_text(rc: int | None, stdout: str, stderr: str) -> str:
+    """Human-readable transcript of one _invoke outcome for st.code."""
+    text = (stdout + (("\n" + stderr) if stderr.strip() else "")).strip()
+    text = text or "(no output)"
+    return text if rc is None else f"exit code {rc}\n{text}"
+
+
+def _posix_path(p: Path) -> str:
+    """The path as the (possibly WSL-side) binary must see it."""
+    return _to_wsl_path(p) if os.name == "nt" else str(p)
+
+
+def _signed_receipt_files() -> list[Path]:
+    """receipts/*.json that are real signed bulla receipts (skip receipt-lite/UNSIGNED)."""
+    out: list[Path] = []
+    for p in _receipt_files():
+        r = _read_json(p)
+        if not isinstance(r, dict):
+            continue
+        if r.get("UNSIGNED") or r.get("schema") == RECEIPT_LITE_SCHEMA:
+            continue
+        if "sig" not in r or "body" not in r:  # bulla-receipt/v0 shape
+            continue
+        out.append(p)
+    return out
+
+
+def _zk_proof_sources() -> list[tuple[str, dict[str, Any]]]:
+    """(label, RiskProof) pairs from session demo, cell decisions and receipts/zk/."""
+    sources: list[tuple[str, dict[str, Any]]] = []
+    demo = st.session_state.get(_ZK_DEMO_KEY)
+    if isinstance(demo, dict) and all(k in demo for k in _ZK_KEYS):
+        sources.append(("demo proof (generated this session)", demo))
+    try:
+        decision_files = sorted((RECEIPTS_DIR / "cells").glob("*/decision.json"))
+    except Exception:
+        decision_files = []
+    for f in decision_files:
+        d = _read_json(f)
+        zk = d.get("zk_proof") if isinstance(d, dict) else None
+        if isinstance(zk, dict) and all(k in zk for k in _ZK_KEYS):
+            sources.append((f"cells/{f.parent.name}/decision.json", zk))
+    try:
+        zk_files = sorted((RECEIPTS_DIR / "zk").glob("*.json"))
+    except Exception:
+        zk_files = []
+    for f in zk_files:
+        d = _read_json(f)
+        if isinstance(d, dict) and all(k in d for k in _ZK_KEYS):
+            sources.append((f"zk/{f.name}", d))
+    return sources
+
+
+def _zk_payload_json(proof: dict[str, Any]) -> str:
+    """Exactly the fields `zkrisk verify` checks — what you see is what is proved."""
+    return json.dumps({k: proof[k] for k in _ZK_KEYS if k in proof}, indent=2)
+
+
+def _show_invoke_result(rc: int | None, stdout: str, stderr: str,
+                        ok_msg: str, fail_msg: str) -> None:
+    """Uniform green/red/info treatment for one verifier run."""
+    if rc is None:
+        st.info(_TOOLCHAIN_HINT)
+        if stderr.strip():
+            st.caption(f"detail: {stderr.strip()}")
+        return
+    if rc == 0:
+        st.success(ok_msg)
+    else:
+        st.error(fail_msg)
+    st.code(_invoke_text(rc, stdout, stderr), language=None)
+
+
+def _render_forge_receipt_section() -> None:
+    st.subheader("Forge a receipt")
+    files = _signed_receipt_files()
+    if not files:
+        st.info(
+            "No signed bulla receipts on disk yet (receipt-lite/UNSIGNED files "
+            "don't count — there is nothing cryptographic to forge in those). "
+            "Run a decision cycle with bulla available and come back."
+        )
+        return
+    names = [p.name for p in files]
+    selected = st.selectbox("Signed receipt", names, key="tamper_receipt_sel",
+                            help="Every file here carries an Ed25519 signature over "
+                                 "the receipt body — edit any byte and it breaks.")
+    path = files[names.index(str(selected))]
+    receipt = _read_json(path)
+    pretty = json.dumps(receipt, indent=2) if receipt is not None else path.read_text(
+        encoding="utf-8", errors="replace")
+    edited = st.text_area(
+        "Receipt JSON — edit anything, then verify your copy",
+        value=pretty, height=400, key=f"tamper_receipt_txt_{selected}",
+    )
+    st.caption("Hint: try changing `exit_code`, a hash, or `seal_ok` — then verify.")
+    c1, c2 = st.columns(2)
+    if c1.button("Verify original", key="tamper_receipt_orig"):
+        rc, out, err = _invoke([BULLA_BIN, "verify", _posix_path(path)])
+        _show_invoke_result(
+            rc, out, err,
+            ok_msg="SEAL intact — signature, digest and event chain verify",
+            fail_msg="Original receipt FAILED verification — the on-disk file has "
+                     "been altered since it was signed.",
+        )
+    if c2.button("Verify my edited copy", key="tamper_receipt_edit"):
+        fd, tmp_name = tempfile.mkstemp(prefix="quaestor-tamper-", suffix=".json")
+        tmp = Path(tmp_name)
+        try:
+            os.close(fd)
+            tmp.write_text(edited, encoding="utf-8")
+            rc, out, err = _invoke([BULLA_BIN, "verify", _posix_path(tmp)])
+        finally:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+        _show_invoke_result(
+            rc, out, err,
+            ok_msg="Your copy still verifies — the signed content is unchanged. "
+                   "(Whitespace and key order aren't part of the signed body — "
+                   "change an actual value and try again.)",
+            fail_msg="FORGERY DETECTED — signature does not match the edited body",
+        )
+
+
+def _render_forge_zk_section() -> None:
+    st.subheader("Forge a ZK risk proof")
+    st.caption(
+        "Each approved order can carry a Bulletproof range proof: \"worst-case "
+        "loss < 2^cap_bits dollars\" — without revealing the amount (Pedersen "
+        "commitment). The JSON below is exactly what `zkrisk verify` checks."
+    )
+    sources = _zk_proof_sources()
+    if not sources:
+        st.info("No RiskProof found on disk (receipts/cells/*/decision.json or "
+                "receipts/zk/). Generate a live one instead:")
+        if st.button("Generate a demo proof (max loss $9,500 < $65,536)",
+                     key="tamper_zk_gen"):
+            rc, out, err = _invoke([ZKRISK_BIN, "prove", "9500", "16"])
+            if rc is None:
+                st.info(_TOOLCHAIN_HINT)
+                if err.strip():
+                    st.caption(f"detail: {err.strip()}")
+                return
+            proof: Any = None
+            if rc == 0:
+                try:
+                    proof = json.loads(out.strip())
+                except ValueError:
+                    proof = None
+            if isinstance(proof, dict) and all(k in proof for k in _ZK_KEYS):
+                st.session_state[_ZK_DEMO_KEY] = proof
+                st.rerun()
+            else:
+                st.error("zkrisk prove failed — no proof produced.")
+                st.code(_invoke_text(rc, out, err), language=None)
+        return
+
+    labels = [lbl for lbl, _ in sources]
+    if len(sources) > 1:
+        chosen = st.selectbox("RiskProof", labels, key="tamper_zk_sel")
+        label, proof_dict = sources[labels.index(str(chosen))]
+    else:
+        label, proof_dict = sources[0]
+        st.caption(f"Source: {label}")
+    pristine = _zk_payload_json(proof_dict)
+    edited = st.text_area(
+        "RiskProof JSON — edit anything, then verify your copy",
+        value=pristine, height=260, key=f"tamper_zk_txt_{label}",
+    )
+    st.caption("Hint: flip one hex character in `commitment` or `proof`, or bump "
+               "`cap_bits` — then verify.")
+    c1, c2 = st.columns(2)
+    if c1.button("Verify original", key="tamper_zk_orig"):
+        rc, out, err = _invoke([ZKRISK_BIN, "verify"], stdin=pristine)
+        _show_invoke_result(
+            rc, out, err,
+            ok_msg="proof verifies — the order's worst-case loss is under the cap",
+            fail_msg="Original proof FAILED verification — the stored proof is "
+                     "not valid for its commitment.",
+        )
+    if c2.button("Verify my edited copy", key="tamper_zk_edit"):
+        rc, out, err = _invoke([ZKRISK_BIN, "verify"], stdin=edited)
+        _show_invoke_result(
+            rc, out, err,
+            ok_msg="Your copy still verifies — the proof is unchanged. (Edit a "
+                   "hex digit or `cap_bits` and try again.)",
+            fail_msg="INVALID PROOF — the math caught you",
+        )
+
+
+def _render_tamper_tab() -> None:
+    st.markdown(
+        "**Don't trust our audit trail — attack it.** Below are the actual "
+        "cryptographic artifacts this agent produced. Edit them however you "
+        "like and re-run the verifiers: the genuine records pass, and any "
+        "forged byte is caught by the Ed25519 signature (receipts) or the "
+        "Bulletproof range proof (risk caps)."
+    )
+    _render_forge_receipt_section()
+    st.divider()
+    _render_forge_zk_section()
+
+
 # ------------------------------------------------------------------------ About tab
 def _render_about_tab() -> None:
     st.markdown(
@@ -547,11 +811,15 @@ def main() -> None:
         f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC"
     )
 
-    tab_agent, tab_receipts, tab_about = st.tabs(["Agent", "Receipts", "About"])
+    tab_agent, tab_receipts, tab_tamper, tab_about = st.tabs(
+        ["Agent", "Receipts", "🔨 Tamper Playground", "About"]
+    )
     with tab_agent:
         _render_agent_tab()
     with tab_receipts:
         _render_receipts_tab()
+    with tab_tamper:
+        _render_tamper_tab()
     with tab_about:
         _render_about_tab()
 

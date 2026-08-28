@@ -403,9 +403,11 @@ def test_concurrency_pass_and_fail(policy, account):
 # --------------------------------------------------------------------------- #
 
 def test_concentration_pass_and_fail_named_underlying(policy, account):
-    # SPY cap 60% of 100k = $60,000; new order adds |1.05| * 100 * 2 = $210
+    # SPY cap 60% of 100k = $60,000. Projection is GROSS per-leg (sum of leg mids
+    # * ratio * 100 * qty — matching how portfolio.underlying_exposure measures
+    # held legs), NOT net premium: for make_vertical() that is $600, not $210.
     ok = run_judge(make_vertical(), policy, account,
-                   state=fresh_state(underlying_exposure={"SPY": 59_700.0}))
+                   state=fresh_state(underlying_exposure={"SPY": 59_000.0}))
     assert get_check(ok, "concentration").ok
 
     bad = run_judge(make_vertical(), policy, account,

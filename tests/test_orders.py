@@ -166,9 +166,45 @@ def test_single_leg_payload_shape() -> None:
     assert isinstance(payload["limit_price"], str)
 
 
-def test_single_leg_rejects_nonpositive_limit() -> None:
-    with pytest.raises(ValueError, match="limit_price"):
+def test_single_leg_rejects_zero_limit_and_negative_buy() -> None:
+    # Zero is always invalid; a negative (signed-net credit) limit is only valid
+    # on a SELL leg — a negative BUY makes no sense under the signed convention.
+    with pytest.raises(ValueError, match="nonzero"):
+        build_order_payload(_long_call(limit=0.0), attempt=0)
+    with pytest.raises(ValueError, match="BUY leg"):
         build_order_payload(_long_call(limit=-1.0), attempt=0)
+
+
+def test_single_leg_sell_to_close_accepts_signed_negative_limit() -> None:
+    # Project convention: sell-to-close a long carries a NEGATIVE signed-net limit
+    # (strategy.py / cli.py produce these); Alpaca's payload is unsigned with the
+    # direction on side/position_intent. Regression for the review finding that
+    # every long-position exit died in build_order_payload.
+    intent = _intent(
+        Structure.CLOSE,
+        [_leg(CALL_650, Side.SELL, PositionIntent.SELL_TO_CLOSE)],
+        qty=1,
+        limit=-1.20,
+    )
+    payload = build_order_payload(intent, attempt=0)
+    assert payload["side"] == "sell"
+    assert payload["position_intent"] == "sell_to_close"
+    assert payload["limit_price"] == "1.20"  # abs() serialized, sign carried by side
+
+
+def test_marketable_limit_preserves_negative_sign_for_close() -> None:
+    # broker._requote and cli.py discard a requote whose sign flips vs the intent;
+    # marketable_limit must therefore preserve the signed-net convention.
+    intent = _intent(
+        Structure.CLOSE,
+        [_leg(CALL_650, Side.SELL, PositionIntent.SELL_TO_CLOSE)],
+        qty=1,
+        limit=-1.20,
+    )
+    chain = {CALL_650: {"bid": 1.20, "ask": 1.30, "mid": 1.25}}
+    policy = {"execution": {"marketable_buffer_usd": 0.02}}
+    price = marketable_limit(intent, chain, policy)
+    assert price == pytest.approx(-1.18)  # bid - buffer, sign preserved
 
 
 def test_qty_must_be_whole_and_positive() -> None:

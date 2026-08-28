@@ -120,9 +120,13 @@ class AuditTrail:
     def _order_csv_fields(self, action: str, request: Any, response: Any) -> list[str]:
         req: dict[str, Any] = request if isinstance(request, dict) else {}
         resp: dict[str, Any] = response if isinstance(response, dict) else {}
+        # An ExecutionReport nests the final Alpaca order under "raw" — that order
+        # carries the ACTUALLY submitted limit_price/side/type/tif after reposts,
+        # which must win over the intent's original decision-time price.
+        raw: dict[str, Any] = resp.get("raw") if isinstance(resp.get("raw"), dict) else {}
 
         def pick(*keys: str) -> str:
-            for source in (resp, req):
+            for source in (raw, resp, req):
                 for key in keys:
                     value = source.get(key)
                     if value not in (None, ""):
@@ -131,7 +135,7 @@ class AuditTrail:
 
         symbol = pick("symbol")
         if not symbol:
-            legs = resp.get("legs") or req.get("legs") or []
+            legs = raw.get("legs") or resp.get("legs") or req.get("legs") or []
             if isinstance(legs, list):
                 symbol = "|".join(
                     str(leg.get("symbol", "")) for leg in legs if isinstance(leg, dict)

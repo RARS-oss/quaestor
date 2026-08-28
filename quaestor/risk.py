@@ -258,6 +258,11 @@ def check_weekly_halt(intent: TradeIntent, policy: dict, portfolio_state: dict) 
         return _skip_for_close(name)
     halt_pct = float(policy["account"]["weekly_loss_halt_pct"])
     week_pnl = float(portfolio_state.get("week_pnl_pct", 0.0))
+    if bool(portfolio_state.get("halted_week", False)):
+        return RiskCheck(
+            name, False,
+            "weekly hard stop latched — no new positions for the rest of the contest",
+        )
     if week_pnl <= -halt_pct:
         return RiskCheck(
             name, False,
@@ -281,10 +286,16 @@ def check_concurrency(intent: TradeIntent, policy: dict, portfolio_state: dict) 
 
 
 def check_concentration(
-    intent: TradeIntent, policy: dict, account: AccountSnapshot, portfolio_state: dict
+    intent: TradeIntent, policy: dict, account: AccountSnapshot, portfolio_state: dict,
+    chain: dict[str, dict] | None = None,
 ) -> RiskCheck:
-    """Projected per-underlying exposure (current |market value| plus this order's
-    net premium |limit|*100*qty) must stay under the underlying's %-of-equity cap."""
+    """Projected per-underlying exposure must stay under the underlying's %-of-equity cap.
+
+    The held side (portfolio.underlying_exposure) measures GROSS per-leg
+    |market_value|, so the projection must use the same metric: sum of per-leg
+    mids * ratio * 100 * qty. Net premium (|limit|) understates a spread's
+    measured exposure ~3x and would certify caps the fill immediately breaches.
+    Falls back to |limit| only when a leg mid is unavailable."""
     name = "concentration"
     if intent.structure is Structure.CLOSE:
         return _skip_for_close(name)
@@ -292,7 +303,17 @@ def check_concentration(
     cap_pct = float(caps.get(intent.underlying, caps.get("default", 100)))
     cap_usd = account.equity * cap_pct / 100.0
     current = float(portfolio_state.get("underlying_exposure", {}).get(intent.underlying, 0.0))
-    added = abs(intent.limit_price) * 100.0 * intent.qty
+    gross_unit: float | None = 0.0
+    for leg in intent.legs:
+        mid = _leg_mid((chain or {}).get(leg.symbol))
+        if mid is None:
+            gross_unit = None
+            break
+        gross_unit += abs(mid) * leg.ratio_qty
+    if gross_unit is None:
+        added = abs(intent.limit_price) * 100.0 * intent.qty  # fallback: net premium
+    else:
+        added = gross_unit * 100.0 * intent.qty
     projected = current + added
     if projected > cap_usd + _EPS:
         return RiskCheck(
@@ -538,7 +559,7 @@ def judge(
         check_daily_halt(intent, policy, portfolio_state),
         check_weekly_halt(intent, policy, portfolio_state),
         check_concurrency(intent, policy, portfolio_state),
-        check_concentration(intent, policy, account, portfolio_state),
+        check_concentration(intent, policy, account, portfolio_state, chain),
         check_spread_quality(intent, policy, chain),
         check_open_interest(intent, policy, chain),
         check_leg_price_min(intent, policy, chain),

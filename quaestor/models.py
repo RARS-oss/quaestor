@@ -127,6 +127,7 @@ class ExecutionReport:
     filled_avg_price: float = 0.0
     attempts: int = 0
     request_ids: list[str] = field(default_factory=list)   # X-Request-ID per Alpaca call
+    attempts_log: list[dict] = field(default_factory=list)  # per-attempt {attempt, client_order_id, limit_price, qty}
     error: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
     submitted_at: float = field(default_factory=time.time)

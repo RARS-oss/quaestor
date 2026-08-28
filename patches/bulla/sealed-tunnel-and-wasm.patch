@@ -1,7 +1,7 @@
 From 547c3276ed28e6aba6c8317983e153846eff2e8f Mon Sep 17 00:00:00 2001
 From: RARS-oss <deannacbeauplan@hotmail.com>
 Date: Sat, 29 Aug 2026 01:05:28 +0300
-Subject: [PATCH] egress broker: CONNECT TLS-passthrough tunnel + zkrisk
+Subject: [PATCH 1/2] egress broker: CONNECT TLS-passthrough tunnel + zkrisk
  example
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -301,6 +301,134 @@ index 0000000..d5ee845
 +            std::process::exit(2);
 +        }
 +    }
++}
+-- 
+2.54.0.windows.1
+
+
+From 096314bd5f283378c0b1f2a61122679706a6e806 Mon Sep 17 00:00:00 2001
+From: RARS-oss <deannacbeauplan@hotmail.com>
+Date: Sat, 29 Aug 2026 01:15:29 +0300
+Subject: [PATCH 2/2] bulla-wasm: verify a receipt in the browser (WebAssembly)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The bulla-core verify path is pure (signature + digest + event chain + seal
+verdict, no I/O), so it compiles to wasm32 cleanly. bulla-wasm exposes
+verify_receipt(json)->json via wasm-bindgen; a judge can verify a receipt — or
+try to forge one and watch it fail — entirely client-side, no backend.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018EerydX1xjHvqUhYgSfQ3A
+---
+ Cargo.toml                   |  1 +
+ crates/bulla-wasm/Cargo.toml | 21 ++++++++++++++
+ crates/bulla-wasm/src/lib.rs | 56 ++++++++++++++++++++++++++++++++++++
+ 3 files changed, 78 insertions(+)
+ create mode 100644 crates/bulla-wasm/Cargo.toml
+ create mode 100644 crates/bulla-wasm/src/lib.rs
+
+diff --git a/Cargo.toml b/Cargo.toml
+index 440e1a9..506dc41 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -5,6 +5,7 @@ members = [
+     "crates/bulla-core",
+     "crates/bulla-cli",
+     "crates/bulla-zk",
++    "crates/bulla-wasm",
+ ]
+ 
+ [workspace.package]
+diff --git a/crates/bulla-wasm/Cargo.toml b/crates/bulla-wasm/Cargo.toml
+new file mode 100644
+index 0000000..19ab8dc
+--- /dev/null
++++ b/crates/bulla-wasm/Cargo.toml
+@@ -0,0 +1,21 @@
++[package]
++name = "bulla-wasm"
++version.workspace = true
++edition.workspace = true
++license.workspace = true
++repository.workspace = true
++description = "bulla verify compiled to WebAssembly — verify a receipt in the browser, no backend"
++
++[lib]
++crate-type = ["cdylib", "rlib"]
++
++[dependencies]
++bulla-core.workspace = true
++wasm-bindgen = "0.2"
++serde_json.workspace = true
++
++# getrandom is pulled in transitively (ed25519-dalek). On wasm32 it needs the
++# "js" backend to compile even though `verify` never draws randomness. Scoped to
++# wasm so host builds of the workspace are unaffected.
++[target.'cfg(target_arch = "wasm32")'.dependencies]
++getrandom = { version = "0.2", features = ["js"] }
+diff --git a/crates/bulla-wasm/src/lib.rs b/crates/bulla-wasm/src/lib.rs
+new file mode 100644
+index 0000000..8ea27ae
+--- /dev/null
++++ b/crates/bulla-wasm/src/lib.rs
+@@ -0,0 +1,56 @@
++//! bulla verify, compiled to WebAssembly.
++//!
++//! The verification path in `bulla-core` is pure (no filesystem, no network, no
++//! clock): it re-checks the Ed25519 signature, the body digest, the event
++//! hash-chain, and recomputes the seal verdict from the attested policy. That
++//! makes it trivially portable to the browser — a judge can verify a receipt,
++//! or try to forge one and watch it fail, entirely client-side with no backend
++//! and no trust in any server.
++//!
++//! Exposes one function, `verify_receipt(json) -> json`, returning a small
++//! report object: { ok_json: bool, intact, sig_ok, digest_ok, chain_ok,
++//! seal_ok, command, exit, notes[], error }.
++
++use wasm_bindgen::prelude::*;
++
++/// Verify a bulla receipt supplied as a JSON string. Returns a JSON string with
++/// the verification report. Never panics: malformed input yields `error`.
++#[wasm_bindgen]
++pub fn verify_receipt(json: &str) -> String {
++    let report = match serde_json::from_str::<bulla_core::SignedReceipt>(json) {
++        Ok(sr) => {
++            let r = bulla_core::verify(&sr);
++            let exit = &sr.body.outcome;
++            serde_json::json!({
++                "ok_json": true,
++                "intact": r.intact(),
++                "sig_ok": r.sig_ok,
++                "digest_ok": r.digest_ok,
++                "chain_ok": r.chain_ok,
++                "seal_ok": r.seal_ok,
++                "command": sr.body.command.join(" "),
++                "exit_kind": exit.exit_kind,
++                "exit_code": exit.exit_code,
++                "pubkey": sr.pubkey,
++                "notes": r.notes,
++                "error": serde_json::Value::Null,
++            })
++        }
++        Err(e) => serde_json::json!({
++            "ok_json": false,
++            "intact": false,
++            "sig_ok": false,
++            "digest_ok": false,
++            "chain_ok": false,
++            "seal_ok": false,
++            "error": format!("not a valid bulla receipt JSON: {e}"),
++        }),
++    };
++    report.to_string()
++}
++
++/// Library version string, for the page footer.
++#[wasm_bindgen]
++pub fn version() -> String {
++    env!("CARGO_PKG_VERSION").to_string()
 +}
 -- 
 2.54.0.windows.1

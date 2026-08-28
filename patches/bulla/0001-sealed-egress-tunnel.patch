@@ -1,0 +1,307 @@
+From 547c3276ed28e6aba6c8317983e153846eff2e8f Mon Sep 17 00:00:00 2001
+From: RARS-oss <deannacbeauplan@hotmail.com>
+Date: Sat, 29 Aug 2026 01:05:28 +0300
+Subject: [PATCH] egress broker: CONNECT TLS-passthrough tunnel + zkrisk
+ example
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Adds a raw byte tunnel mode to the mediated egress broker so a hermetic cell
+can make authenticated HTTPS calls (TLS terminated in-cell — keys never reach
+the broker in plaintext) while the seal stays HELD: netns still empty, the Unix
+socket is the only conduit, (host,port) allowlisted, IP pinned, and the
+per-direction ciphertext transcript hash-chained into the signed receipt.
+One HTTPS request per tunnel. Enables verifiable autonomous live trading.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018EerydX1xjHvqUhYgSfQ3A
+---
+ crates/bulla-cli/src/main.rs       | 182 +++++++++++++++++++++++++++--
+ crates/bulla-zk/examples/zkrisk.rs |  53 +++++++++
+ 2 files changed, 227 insertions(+), 8 deletions(-)
+ create mode 100644 crates/bulla-zk/examples/zkrisk.rs
+
+diff --git a/crates/bulla-cli/src/main.rs b/crates/bulla-cli/src/main.rs
+index b362e72..c1a7e22 100644
+--- a/crates/bulla-cli/src/main.rs
++++ b/crates/bulla-cli/src/main.rs
+@@ -7,11 +7,13 @@
+ //! and the seal verdict — with no network and no trust in the runner beyond its signing key.
+ 
+ use std::fs;
+-use std::io::{BufRead, BufReader, Read as _, Write as _};
++use std::io::{BufRead, BufReader, Read, Write};
+ use std::net::TcpStream;
+-use std::os::unix::net::UnixListener;
++use std::os::unix::net::{UnixListener, UnixStream};
+ use std::path::{Path, PathBuf};
+ use std::process::{Child, Command, Stdio};
++use std::sync::atomic::{AtomicBool, Ordering};
++use std::sync::Arc;
+ use std::time::{Duration, SystemTime, UNIX_EPOCH};
+ 
+ use anyhow::{bail, Context, Result};
+@@ -1478,6 +1480,71 @@ fn cmd_egress_broker(a: BrokerArgs) -> Result<()> {
+             }
+         }
+         let line = line.trim();
++
++        // CONNECT mode: raw TLS-passthrough tunnel. The cell terminates TLS itself
++        // (API keys never reach the broker in plaintext); the broker allowlists the
++        // (host, port), pins the resolved IP, then pumps ciphertext both ways and
++        // hash-chains the transcript into the signed receipt. The seal stays HELD:
++        // netns is still empty, this Unix socket is the ONLY conduit, and every byte
++        // to the outside is mediated + recorded. One tunnel == one HTTPS request.
++        if let Some(rest) = line.strip_prefix("CONNECT ") {
++            let tparts: Vec<&str> = rest.splitn(2, ' ').collect();
++            if tparts.len() < 2 {
++                let _ = stream.write_all(b"ERROR bad CONNECT (want: CONNECT HOST PORT)\n");
++                continue;
++            }
++            let host = tparts[0].to_string();
++            let port: u16 = tparts[1].trim().parse().unwrap_or(0);
++            let allowed = allowlist_ok(&a.allow, &host, port);
++            let req_line_sha = bc::sha256_hex(format!("CONNECT {host} {port}").as_bytes());
++            if !allowed {
++                let _ = stream.write_all(b"DENIED not on allowlist\n");
++                log_call(&mut logf, bc::LoggedCall {
++                    host, port, path: "CONNECT".into(), allowed: false,
++                    resolved_ip: String::new(), req_sha256: req_line_sha,
++                    resp_sha256: bc::sha256_hex(b""), resp_bytes: 0,
++                });
++                continue;
++            }
++            match resolve_and_validate(&host, port) {
++                Err(e) => {
++                    let _ = stream.write_all(format!("DENIED {e}\n").as_bytes());
++                    log_call(&mut logf, bc::LoggedCall {
++                        host, port, path: "CONNECT".into(), allowed: true,
++                        resolved_ip: String::new(), req_sha256: req_line_sha,
++                        resp_sha256: bc::sha256_hex(b""), resp_bytes: 0,
++                    });
++                }
++                Ok(addr) => match TcpStream::connect_timeout(&addr, Duration::from_secs(5)) {
++                    Err(e) => {
++                        let _ = stream.write_all(format!("ERROR {e}\n").as_bytes());
++                        log_call(&mut logf, bc::LoggedCall {
++                            host, port, path: "CONNECT".into(), allowed: true,
++                            resolved_ip: addr.ip().to_string(), req_sha256: req_line_sha,
++                            resp_sha256: bc::sha256_hex(b""), resp_bytes: 0,
++                        });
++                    }
++                    Ok(upstream) => {
++                        // Signal readiness, then pump. The cell sends its TLS bytes
++                        // only after it reads this line, so nothing races the OK.
++                        if stream.write_all(b"OK\n").is_err() {
++                            continue;
++                        }
++                        let (up_sha, _up_bytes, down_sha, down_bytes) =
++                            tunnel(stream, upstream, RESP_CAP as usize);
++                        // req_sha256 binds the cell->exchange transcript (TLS records
++                        // the cell SENT); resp_sha256 binds exchange->cell.
++                        log_call(&mut logf, bc::LoggedCall {
++                            host, port, path: "CONNECT".into(), allowed: true,
++                            resolved_ip: addr.ip().to_string(),
++                            req_sha256: up_sha, resp_sha256: down_sha, resp_bytes: down_bytes,
++                        });
++                    }
++                },
++            }
++            continue;
++        }
++
+         let parts: Vec<&str> = line.splitn(3, ' ').collect();
+         if parts.len() < 3 {
+             let _ = stream.write_all(b"ERROR bad request (want: HOST PORT PATH)\n");
+@@ -1515,7 +1582,7 @@ fn cmd_egress_broker(a: BrokerArgs) -> Result<()> {
+                 },
+             }
+         };
+-        let call = bc::LoggedCall {
++        log_call(&mut logf, bc::LoggedCall {
+             host,
+             port,
+             path,
+@@ -1524,15 +1591,114 @@ fn cmd_egress_broker(a: BrokerArgs) -> Result<()> {
+             req_sha256,
+             resp_sha256,
+             resp_bytes,
+-        };
+-        if let Ok(js) = serde_json::to_string(&call) {
+-            let _ = writeln!(logf, "{js}");
+-            let _ = logf.flush();
+-        }
++        });
+     }
+     Ok(())
+ }
+ 
++/// Append one hashed call record to the broker log (host-only, tamper-evident).
++fn log_call(logf: &mut fs::File, call: bc::LoggedCall) {
++    if let Ok(js) = serde_json::to_string(&call) {
++        let _ = writeln!(logf, "{js}");
++        let _ = logf.flush();
++    }
++}
++
++/// Bidirectional TLS-passthrough pump between the in-cell client (Unix socket) and
++/// the upstream TCP connection. The cell terminates TLS itself, so the broker only
++/// ever sees ciphertext — it records the byte-level transcript hashes per direction
++/// without being able to read (or forge) the plaintext. Returns
++/// (uplink_sha256, uplink_bytes, downlink_sha256, downlink_bytes). One HTTPS
++/// request per tunnel: the cell sends `Connection: close`, so the exchange closing
++/// the response ends the pump. Bounded to `cap` bytes per direction.
++fn tunnel(client: UnixStream, upstream: TcpStream, cap: usize) -> (String, u64, String, u64) {
++    let empty = bc::sha256_hex(b"");
++    let mut c_read = match client.try_clone() {
++        Ok(s) => s,
++        Err(_) => return (empty.clone(), 0, empty, 0),
++    };
++    let mut c_write = client;
++    let mut u_read = match upstream.try_clone() {
++        Ok(s) => s,
++        Err(_) => return (empty.clone(), 0, empty, 0),
++    };
++    let mut u_write = upstream;
++    // The uplink pump wakes each second to observe `done`; the downlink pump ends
++    // when the exchange closes (or 30s idle).
++    let _ = c_read.set_read_timeout(Some(Duration::from_secs(1)));
++    let _ = u_read.set_read_timeout(Some(Duration::from_secs(30)));
++    let done = Arc::new(AtomicBool::new(false));
++    let done_up = Arc::clone(&done);
++    std::thread::scope(|s| {
++        let up = s.spawn(move || pump_until(&mut c_read, &mut u_write, cap, &done_up));
++        let (down_sha, down_bytes) = pump_once(&mut u_read, &mut c_write, cap);
++        done.store(true, Ordering::SeqCst);
++        let (up_sha, up_bytes) = up.join().unwrap_or((bc::sha256_hex(b""), 0));
++        (up_sha, up_bytes, down_sha, down_bytes)
++    })
++}
++
++/// Copy src->dst until EOF/error/cap, hashing the bytes copied.
++fn pump_once<R: Read, W: Write>(src: &mut R, dst: &mut W, cap: usize) -> (String, u64) {
++    let mut acc: Vec<u8> = Vec::new();
++    let mut buf = [0u8; 16384];
++    loop {
++        match src.read(&mut buf) {
++            Ok(0) => break,
++            Ok(n) => {
++                if dst.write_all(&buf[..n]).is_err() {
++                    break;
++                }
++                let _ = dst.flush();
++                acc.extend_from_slice(&buf[..n]);
++                if acc.len() >= cap {
++                    break;
++                }
++            }
++            Err(_) => break,
++        }
++    }
++    (bc::sha256_hex(&acc), acc.len() as u64)
++}
++
++/// Like `pump_once`, but a read timeout is treated as "idle": break only once
++/// `done` is set (the other direction finished). Keeps the uplink half from
++/// blocking forever after the response has been fully relayed.
++fn pump_until<R: Read, W: Write>(
++    src: &mut R,
++    dst: &mut W,
++    cap: usize,
++    done: &AtomicBool,
++) -> (String, u64) {
++    let mut acc: Vec<u8> = Vec::new();
++    let mut buf = [0u8; 16384];
++    loop {
++        match src.read(&mut buf) {
++            Ok(0) => break,
++            Ok(n) => {
++                if dst.write_all(&buf[..n]).is_err() {
++                    break;
++                }
++                let _ = dst.flush();
++                acc.extend_from_slice(&buf[..n]);
++                if acc.len() >= cap {
++                    break;
++                }
++            }
++            Err(ref e)
++                if e.kind() == std::io::ErrorKind::WouldBlock
++                    || e.kind() == std::io::ErrorKind::TimedOut =>
++            {
++                if done.load(Ordering::SeqCst) {
++                    break;
++                }
++            }
++            Err(_) => break,
++        }
++    }
++    (bc::sha256_hex(&acc), acc.len() as u64)
++}
++
+ /// True if `(host, port)` is permitted. An allowlist entry `host:port` pins that exact port; a bare
+ /// `host` permits only 80/443. Port is attacker-controlled, so it must be checked (finding H2).
+ fn allowlist_ok(allow: &[String], host: &str, port: u16) -> bool {
+diff --git a/crates/bulla-zk/examples/zkrisk.rs b/crates/bulla-zk/examples/zkrisk.rs
+new file mode 100644
+index 0000000..d5ee845
+--- /dev/null
++++ b/crates/bulla-zk/examples/zkrisk.rs
+@@ -0,0 +1,53 @@
++//! zkrisk — tiny JSON CLI over bulla-zk for quaestor (Alpaca hackathon agent).
++//!
++//!   zkrisk prove <value_u64> <cap_bits>   -> RiskProof JSON on stdout
++//!   zkrisk verify [file.json]             -> {"ok":bool} on stdout (stdin if no file), exit 0/1
++//!
++//! quaestor proves per order: "worst-case loss (whole dollars) < 2^16" — a
++//! zero-knowledge catastrophic-order guard. The Pedersen commitment prefix is
++//! embedded in the Alpaca client_order_id; the proof JSON is sealed into the
++//! bulla receipt for the cycle.
++
++use bulla_zk::{prove_within_cap, verify_within_cap, RiskProof};
++use std::io::Read;
++
++fn main() {
++    let args: Vec<String> = std::env::args().collect();
++    match args.get(1).map(|s| s.as_str()) {
++        Some("prove") => {
++            let value: u64 = args
++                .get(2)
++                .and_then(|s| s.parse().ok())
++                .expect("usage: zkrisk prove <value_u64> <cap_bits>");
++            let cap_bits: usize = args
++                .get(3)
++                .and_then(|s| s.parse().ok())
++                .expect("usage: zkrisk prove <value_u64> <cap_bits>");
++            let proof = prove_within_cap(value, cap_bits);
++            // prove_within_cap happily "proves" an over-cap value; the proof just
++            // fails verification. Self-check so callers can trust exit code 0.
++            if !verify_within_cap(&proof) {
++                eprintln!("{{\"error\":\"proof does not verify (value >= 2^cap_bits?)\"}}");
++                std::process::exit(1);
++            }
++            println!("{}", serde_json::to_string(&proof).expect("serialize RiskProof"));
++        }
++        Some("verify") => {
++            let mut buf = String::new();
++            match args.get(2) {
++                Some(path) => buf = std::fs::read_to_string(path).expect("read proof file"),
++                None => {
++                    std::io::stdin().read_to_string(&mut buf).expect("read stdin");
++                }
++            }
++            let proof: RiskProof = serde_json::from_str(&buf).expect("RiskProof JSON");
++            let ok = verify_within_cap(&proof);
++            println!("{}", serde_json::json!({ "ok": ok }));
++            std::process::exit(if ok { 0 } else { 1 });
++        }
++        _ => {
++            eprintln!("usage: zkrisk prove <value_u64> <cap_bits> | zkrisk verify [file.json]");
++            std::process::exit(2);
++        }
++    }
++}
+-- 
+2.54.0.windows.1
+

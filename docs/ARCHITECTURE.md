@@ -245,6 +245,24 @@ class Agent:
 ```
 `__main__.py` dispatches to cli.main().
 
+## Sealed live trading (killer feature) — operational notes
+- The bulla egress broker creates a Unix socket under the cell `--work` dir.
+  **drvfs (`/mnt/c`) does not support Unix sockets** — any cell that uses
+  `--egress-allow` MUST have its work dir on a native Linux fs (ext4, e.g.
+  `~/.cache/quaestor-cells/...`). The `--out` receipt / `--key` / `--ledger`
+  may live on `/mnt/c` (ordinary file writes). Byte-attestation cells (the v1
+  cycle receipts, no egress) work fine on `/mnt/c`.
+- Sealed trade = `bulla run --work <ext4 cell> --egress-allow
+  paper-api.alpaca.markets:443 --egress-allow data.alpaca.markets:443
+  --nondeterministic --out <receipt> -- python3 /work/<agent-step>`. TLS
+  terminates in-cell (keys never reach the broker in plaintext); the receipt's
+  egress block carries one hash-chained CONNECT call per HTTPS request; seal
+  stays HELD. `quaestor/sealed_transport.py` is the httpx transport the agent
+  uses inside such a cell; `scripts/in_cell_probe.py` is the stdlib proof.
+- Keep this OFF the critical P&L path: the autonomous week trades in the normal
+  path; the sealed tunnel is demonstrated per-order (proven end-to-end) so an
+  experimental tunnel bug can never halt trading.
+
 ## Non-negotiable coding standards
 - Python 3.12, stdlib + httpx + pyyaml + alpaca-py + openai only. Type hints everywhere.
 - No placeholder/TODO code — everything runnable. No network in unit tests (fixtures only).

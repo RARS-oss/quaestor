@@ -545,6 +545,16 @@ class Agent:
         # Every cycle is attested — a quiet cycle receipt proves the agent looked
         # at the market and chose to do nothing (discipline is part of the audit).
         if self.receipts is not None:
+            # Seal the FULL judge inputs so every verdict can be re-derived offline
+            # from signed data (quaestor replay): intents + account + portfolio_state
+            # + the exact chain quotes each intent's legs were judged against + now.
+            involved = {leg.get("symbol") for i in rec.intents
+                        for leg in (i.get("legs") or []) if isinstance(leg, dict)}
+            replay_chains: dict[str, dict] = {}
+            for u, ch in chains.items():
+                trimmed = {s: q for s, q in ch.items() if s in involved}
+                if trimmed:
+                    replay_chains[u] = trimmed
             decision_payload = {
                 "cycle_id": cycle_id,
                 "now_et": now.isoformat(),
@@ -556,6 +566,15 @@ class Agent:
                 "inputs": {
                     "account": rec.account.to_dict() if rec.account else None,
                     "market_open": market_open,
+                },
+                "replay": {
+                    "now": now.isoformat(),
+                    "policy_digest": str(self.policy.get("digest", "")),
+                    "account": rec.account.to_dict() if rec.account else None,
+                    "portfolio_state": portfolio_state,
+                    "chains": replay_chains,
+                    "intents": rec.intents,
+                    "verdicts": rec.verdicts,
                 },
             }
             try:

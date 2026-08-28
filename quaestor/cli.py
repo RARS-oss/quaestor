@@ -256,6 +256,58 @@ def cmd_loop(interval: int) -> int:
 
 # --------------------------------------------------------------------- rehearse
 
+def cmd_replay(ref: str | None) -> int:
+    """Re-derive sealed risk verdicts from signed inputs and confirm they reproduce.
+
+    With no ref, replays every cycle that carries a replay block. Proves the
+    agent's decisions are deterministic and reproducible from tamper-evident data,
+    not arbitrary."""
+    from quaestor.config import load_policy, load_settings
+    from quaestor.replay import replay_cycle
+
+    settings = load_settings()
+    policy = load_policy()
+    cells = settings.receipts_dir / "cells"
+
+    refs: list[str]
+    if ref:
+        refs = [ref]
+    else:
+        refs = sorted(p.name for p in cells.glob("*") if (p / "decision.json").exists()) \
+            if cells.exists() else []
+    if not refs:
+        print("replay: no sealed decision cycles found (run some cycles first).")
+        return 0
+
+    rows: list[list[str]] = []
+    all_ok = True
+    total_intents = reproduced = 0
+    for r in refs:
+        rep = replay_cycle(settings.receipts_dir, policy, r)
+        if not rep.get("found"):
+            rows.append([r[:22], "—", "—", rep.get("note", "not found")])
+            continue
+        results = rep.get("results", [])
+        total_intents += len(results)
+        reproduced += sum(1 for x in results if x.get("match"))
+        cycle_ok = rep.get("all_match") and rep.get("policy_digest_match", True)
+        all_ok = all_ok and cycle_ok
+        detail = f"{sum(1 for x in results if x.get('match'))}/{len(results)} verdicts"
+        if not rep.get("policy_digest_match", True):
+            detail += " · policy changed"
+        rows.append([
+            str(rep.get("cycle_id", r))[:22],
+            "✓" if rep.get("policy_digest_match") else "≠",
+            "REPRODUCES" if cycle_ok else "MISMATCH",
+            detail,
+        ])
+    _render_table("quaestor replay — decisions re-derived from signed inputs",
+                  ["cycle", "policy", "result", "detail"], rows)
+    print(f"replay: {reproduced}/{total_intents} risk verdicts reproduced from sealed inputs; "
+          + ("all cycles reproduce ✓" if all_ok else "some cycles did not reproduce ✗"))
+    return 0 if all_ok else 1
+
+
 def cmd_rehearse(place_order: bool = False) -> int:
     """Dress rehearsal: exercise the full decision path against LIVE data without
     trading (data -> signals -> strategy -> risk -> order payloads). With
@@ -792,6 +844,9 @@ def _build_parser() -> argparse.ArgumentParser:
     reh = sub.add_parser("rehearse", help="dress rehearsal: full decision path on live data, no trading")
     reh.add_argument("--place-order", action="store_true",
                      help="also submit + cancel one real unfillable order to prove the execution path")
+    rep = sub.add_parser("replay", help="re-derive sealed risk verdicts from signed inputs (determinism proof)")
+    rep.add_argument("ref", nargs="?", default=None,
+                     help="a cycle id or receipt path; default: every sealed cycle")
     return parser
 
 
@@ -814,6 +869,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_bundle(args.out)
         if args.command == "rehearse":
             return cmd_rehearse(place_order=args.place_order)
+        if args.command == "replay":
+            return cmd_replay(args.ref)
         if args.command == "flatten":
             return cmd_flatten()
     except KeyboardInterrupt:

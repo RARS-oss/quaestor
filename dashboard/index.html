@@ -1,0 +1,561 @@
+<title>quaestor — start here</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="quaestor — an autonomous trading agent whose every trade you can verify, not trust. The front door to every verifiable surface.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<style>
+  /* ============ tokens : light is the base, dark is the intended instrument ============ */
+  :root{
+    --ground:#f4f6fb; --surface:#ffffff; --surface-2:#eef1f8; --sunken:#f7f8fc;
+    --ink:#131726; --muted:#57617a; --faint:#8790a6;
+    --line:#e2e5f1; --line-strong:#ccd2e4;
+    --accent:#4750d8; --accent-ink:#3038b8; --accent-soft:rgba(71,80,216,.10);
+    --green:#0e9a67; --red:#d63a28; --cyan:#0d8299;
+    --code-bg:#f6f8fd; --code-line:#e6e9f4;
+    --shadow:0 1px 2px rgba(19,23,38,.05), 0 14px 40px rgba(19,23,38,.07);
+    --ring:rgba(71,80,216,.45);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --ground:#0b0e15; --surface:#131826; --surface-2:#0f1420; --sunken:#0d111b;
+      --ink:#e8ecf7; --muted:#9aa4bd; --faint:#69708a;
+      --line:#222a3d; --line-strong:#313a53;
+      --accent:#6a7cff; --accent-ink:#8f9dff; --accent-soft:rgba(106,124,255,.13);
+      --green:#35c98c; --red:#ff6459; --cyan:#5fd6e4;
+      --code-bg:#0d111b; --code-line:#1e2536;
+      --shadow:0 0 0 1px rgba(255,255,255,.015) inset, 0 18px 50px rgba(0,0,0,.55);
+      --ring:rgba(106,124,255,.55);
+    }
+  }
+  :root[data-theme="dark"]{
+    --ground:#0b0e15; --surface:#131826; --surface-2:#0f1420; --sunken:#0d111b;
+    --ink:#e8ecf7; --muted:#9aa4bd; --faint:#69708a;
+    --line:#222a3d; --line-strong:#313a53;
+    --accent:#6a7cff; --accent-ink:#8f9dff; --accent-soft:rgba(106,124,255,.13);
+    --green:#35c98c; --red:#ff6459; --cyan:#5fd6e4;
+    --code-bg:#0d111b; --code-line:#1e2536;
+    --shadow:0 0 0 1px rgba(255,255,255,.015) inset, 0 18px 50px rgba(0,0,0,.55);
+    --ring:rgba(106,124,255,.55);
+  }
+  :root[data-theme="light"]{
+    --ground:#f4f6fb; --surface:#ffffff; --surface-2:#eef1f8; --sunken:#f7f8fc;
+    --ink:#131726; --muted:#57617a; --faint:#8790a6;
+    --line:#e2e5f1; --line-strong:#ccd2e4;
+    --accent:#4750d8; --accent-ink:#3038b8; --accent-soft:rgba(71,80,216,.10);
+    --green:#0e9a67; --red:#d63a28; --cyan:#0d8299;
+    --code-bg:#f6f8fd; --code-line:#e6e9f4;
+    --shadow:0 1px 2px rgba(19,23,38,.05), 0 14px 40px rgba(19,23,38,.07);
+    --ring:rgba(71,80,216,.45);
+  }
+
+  *{box-sizing:border-box;}
+  html{-webkit-text-size-adjust:100%; scroll-behavior:smooth;}
+  @media (prefers-reduced-motion:reduce){ html{scroll-behavior:auto;} }
+  body{
+    margin:0; background:var(--ground); color:var(--ink);
+    font-family:"IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size:17px; line-height:1.62; letter-spacing:-0.005em;
+    -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+  }
+  .mono{font-family:"IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-variant-numeric:tabular-nums;}
+
+  /* ============ layout scaffolding ============ */
+  .wrap{max-width:1120px; margin:0 auto; padding:0 28px;}
+  .measure{max-width:680px;}
+  section{padding:72px 0; border-top:1px solid var(--line);}
+  section:first-of-type{border-top:0;}
+  @media (max-width:640px){ section{padding:52px 0;} body{font-size:16px;} }
+
+  a{color:var(--accent-ink); text-decoration:none; border-bottom:1px solid color-mix(in srgb, var(--accent) 40%, transparent);}
+  a:hover{border-bottom-color:var(--accent);}
+  a:focus-visible, button:focus-visible{outline:2px solid var(--ring); outline-offset:3px; border-radius:3px;}
+
+  h1,h2,h3{text-wrap:balance; letter-spacing:-0.02em; line-height:1.1; margin:0;}
+  p{margin:0 0 1.05em;}
+  p:last-child{margin-bottom:0;}
+  strong{font-weight:600; color:var(--ink);}
+
+  .eyebrow{
+    font-family:"IBM Plex Mono", monospace; font-size:12px; font-weight:500;
+    letter-spacing:0.22em; text-transform:uppercase; color:var(--accent-ink);
+    display:flex; align-items:center; gap:12px; margin:0 0 22px;
+  }
+  .eyebrow::before{content:""; width:26px; height:1px; background:var(--accent); opacity:.7;}
+  .eyebrow .num{color:var(--faint); letter-spacing:0.1em;}
+
+  h2{font-size:clamp(26px, 3.2vw, 37px); font-weight:600; margin-bottom:16px;}
+  .lead{font-size:clamp(17px,2vw,20px); color:var(--muted); line-height:1.55; max-width:660px;}
+  h3{font-size:19px; font-weight:600; margin:0 0 8px;}
+
+  /* ============ top bar ============ */
+  .topbar{
+    position:sticky; top:0; z-index:20; backdrop-filter:saturate(1.2) blur(10px);
+    background:color-mix(in srgb, var(--ground) 82%, transparent);
+    border-bottom:1px solid var(--line);
+  }
+  .topbar .wrap{display:flex; align-items:center; justify-content:space-between; height:54px;}
+  .brand{display:flex; align-items:center; gap:11px; font-weight:600; letter-spacing:-0.01em; color:var(--ink); border:0;}
+  .brand svg{display:block;}
+  .brand .tag{font-family:"IBM Plex Mono",monospace; font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--faint); border:1px solid var(--line-strong); padding:2px 7px; border-radius:5px;}
+  .themetoggle{
+    font-family:"IBM Plex Mono",monospace; font-size:11.5px; letter-spacing:.1em; text-transform:uppercase;
+    color:var(--muted); background:transparent; border:1px solid var(--line-strong);
+    border-radius:6px; padding:5px 11px; cursor:pointer;
+  }
+  .themetoggle:hover{color:var(--ink); border-color:var(--accent);}
+  @media (max-width:520px){ .brand .tag{display:none;} }
+
+  /* ============ hero ============ */
+  .hero{position:relative; overflow:hidden; padding-top:64px; padding-bottom:60px;}
+  .hero-grid{display:grid; grid-template-columns:minmax(0,1fr) 264px; gap:56px; align-items:center;}
+  @media (max-width:860px){ .hero-grid{grid-template-columns:1fr; gap:40px;} .seal-wrap{order:-1; justify-self:start;} }
+  .hero h1{
+    font-size:clamp(31px, 5vw, 54px); font-weight:600; letter-spacing:-0.03em; line-height:1.05;
+    margin-bottom:22px;
+  }
+  .hero h1 .dim{color:var(--muted); font-weight:500;}
+  .hero .answer{font-size:clamp(17px,2.1vw,21px); color:var(--ink); max-width:600px; line-height:1.5; margin-bottom:14px;}
+  .hero .answer b{color:var(--accent-ink);}
+  .hero .sub{color:var(--muted); max-width:580px; font-size:16px;}
+  .chips{display:flex; flex-wrap:wrap; gap:9px; margin-top:26px;}
+  .chip{
+    font-family:"IBM Plex Mono",monospace; font-size:12px; letter-spacing:.02em;
+    padding:6px 11px; border-radius:999px; border:1px solid var(--line-strong);
+    color:var(--muted); background:var(--surface); display:inline-flex; align-items:center; gap:7px;
+  }
+  .chip .dot{width:7px; height:7px; border-radius:50%; display:inline-block; background:var(--faint);}
+  .chip.ok{color:var(--green); border-color:color-mix(in srgb,var(--green) 40%,var(--line-strong));}
+  .chip.ok .dot{background:var(--green);}
+  .chip.cy{color:var(--cyan); border-color:color-mix(in srgb,var(--cyan) 40%,var(--line-strong));}
+  .chip.cy .dot{background:var(--cyan);}
+  .chip.ac{color:var(--accent-ink); border-color:color-mix(in srgb,var(--accent) 40%,var(--line-strong));}
+  .chip.ac .dot{background:var(--accent);}
+
+  .seal-wrap{display:flex; flex-direction:column; align-items:center; gap:16px;}
+  .seal{width:236px; height:236px; color:var(--accent);}
+  @media (prefers-reduced-motion:no-preference){
+    .seal .rotor{transform-origin:132px 132px; animation:spin 64s linear infinite;}
+    .seal .rotor.rev{animation-duration:96s; animation-direction:reverse;}
+  }
+  @keyframes spin{to{transform:rotate(360deg);}}
+  .sigstrip{
+    width:100%; max-width:280px; font-family:"IBM Plex Mono",monospace; font-size:11px;
+    color:var(--faint); text-align:center; line-height:1.8; word-break:break-all;
+  }
+  .sigstrip b{color:var(--green); font-weight:500;}
+  .sigstrip .k{color:var(--cyan);}
+
+  /* ============ the make verify CTA ============ */
+  .cta{margin-top:34px; max-width:600px;}
+  .cta-label{font-family:"IBM Plex Mono",monospace; font-size:11.5px; letter-spacing:.16em; text-transform:uppercase; color:var(--accent-ink); margin:0 0 10px;}
+  .cmdbox{
+    display:flex; align-items:stretch; background:var(--code-bg); border:1px solid var(--code-line);
+    border-radius:10px; overflow:hidden; box-shadow:var(--shadow);
+  }
+  .cmdbox .cmdtext{
+    flex:1 1 auto; display:flex; align-items:center; gap:11px; padding:14px 16px; min-width:0;
+    font-family:"IBM Plex Mono",monospace; font-size:15px; color:var(--ink); overflow-x:auto; white-space:nowrap;
+  }
+  .cmdbox .cmdtext .prompt{color:var(--accent-ink); user-select:none;}
+  .copybtn{
+    flex:0 0 auto; border:0; border-left:1px solid var(--code-line); background:var(--surface-2);
+    color:var(--muted); font-family:"IBM Plex Mono",monospace; font-size:11.5px; letter-spacing:.08em;
+    text-transform:uppercase; padding:0 18px; cursor:pointer; display:flex; align-items:center; gap:8px;
+  }
+  .copybtn:hover{color:var(--ink); background:color-mix(in srgb,var(--accent) 14%, var(--surface-2));}
+  .copybtn.done{color:var(--green);}
+  .copybtn svg{width:14px; height:14px;}
+  .cta-note{font-size:14px; color:var(--muted); margin-top:11px;}
+  .cta-note b{color:var(--ink); font-weight:600;}
+
+  /* ============ surfaces grid ============ */
+  .surfaces{display:grid; grid-template-columns:repeat(2,1fr); gap:16px; margin-top:34px;}
+  @media (max-width:720px){ .surfaces{grid-template-columns:1fr;} }
+  a.surface{
+    border:1px solid var(--line); border-radius:13px; padding:22px 22px 20px; background:var(--surface);
+    display:flex; flex-direction:column; gap:9px; color:inherit;
+    transition:border-color .16s ease, transform .16s ease, box-shadow .16s ease;
+  }
+  a.surface:hover{ border-color:color-mix(in srgb,var(--accent) 55%, var(--line-strong)); transform:translateY(-2px); box-shadow:var(--shadow); }
+  @media (prefers-reduced-motion:reduce){ a.surface:hover{ transform:none; } }
+  .surface .s-top{display:flex; align-items:center; justify-content:space-between; gap:12px;}
+  .surface .s-ico{width:32px; height:32px; color:var(--accent); flex:0 0 auto;}
+  .surface h3{font-size:16.5px; margin:2px 0 0;}
+  .surface .s-file{font-family:"IBM Plex Mono",monospace; font-size:11.5px; color:var(--faint); letter-spacing:.01em; margin-top:2px; word-break:break-all;}
+  .surface p{font-size:14.5px; color:var(--muted); line-height:1.5; margin:2px 0 0;}
+  .surface .s-go{margin-top:auto; padding-top:12px; font-family:"IBM Plex Mono",monospace; font-size:12px; letter-spacing:.04em; color:var(--accent-ink); display:inline-flex; align-items:center; gap:6px;}
+  .s-tag{
+    font-family:"IBM Plex Mono",monospace; font-size:10.5px; letter-spacing:.11em; text-transform:uppercase;
+    padding:4px 9px; border-radius:999px; border:1px solid var(--line-strong); color:var(--muted); flex:0 0 auto;
+    display:inline-flex; align-items:center; gap:6px;
+  }
+  .s-tag::before{content:""; width:6px; height:6px; border-radius:50%; background:var(--faint);}
+  .s-tag.int{color:var(--accent-ink); border-color:color-mix(in srgb,var(--accent) 40%,var(--line-strong));}
+  .s-tag.int::before{background:var(--accent);}
+  .s-tag.rep{color:var(--red); border-color:color-mix(in srgb,var(--red) 40%,var(--line-strong));}
+  .s-tag.rep::before{background:var(--red);}
+  .s-tag.pit{color:var(--cyan); border-color:color-mix(in srgb,var(--cyan) 40%,var(--line-strong));}
+  .s-tag.pit::before{background:var(--cyan);}
+  .s-tag.live{color:var(--green); border-color:color-mix(in srgb,var(--green) 40%,var(--line-strong));}
+  .s-tag.live::before{background:var(--green);}
+  .avail{margin-top:20px; font-size:13.5px; color:var(--faint); display:flex; gap:9px; align-items:flex-start;}
+  .avail svg{flex:0 0 auto; margin-top:2px; color:var(--faint);}
+
+  /* ============ judges tour ============ */
+  .tour{display:flex; flex-direction:column; gap:0; margin-top:32px; border:1px solid var(--line); border-radius:13px; overflow:hidden; background:var(--surface);}
+  .leg{display:grid; grid-template-columns:96px 1fr; gap:24px; padding:20px 24px; border-top:1px solid var(--line); align-items:baseline;}
+  .leg:first-child{border-top:0;}
+  .leg .t{font-family:"IBM Plex Mono",monospace; font-size:14px; font-weight:600; color:var(--accent-ink); font-variant-numeric:tabular-nums; white-space:nowrap;}
+  .leg .d h3{font-size:15.5px; margin:0 0 5px;}
+  .leg .d p{margin:0; color:var(--muted); font-size:14.5px; line-height:1.5;}
+  .leg .d code, .leg .d .k{font-family:"IBM Plex Mono",monospace; font-size:.86em; background:var(--surface-2); border:1px solid var(--line); padding:1px 6px; border-radius:5px; color:var(--ink); white-space:nowrap;}
+  @media (max-width:600px){ .leg{grid-template-columns:1fr; gap:8px;} }
+
+  /* ============ what makes this different strip ============ */
+  .diffs{display:grid; grid-template-columns:repeat(5,1fr); gap:0; margin-top:32px; border:1px solid var(--line); border-radius:13px; overflow:hidden; background:var(--surface);}
+  @media (max-width:900px){ .diffs{grid-template-columns:repeat(2,1fr);} }
+  @media (max-width:560px){ .diffs{grid-template-columns:1fr;} }
+  .diff{padding:22px 20px 24px; border-left:1px solid var(--line);}
+  .diff:first-child{border-left:0;}
+  @media (max-width:900px){ .diff{border-top:1px solid var(--line);} .diff:nth-child(-n+2){border-top:0;} .diff:nth-child(2n+1){border-left:0;} }
+  @media (max-width:560px){ .diff{border-left:0; border-top:1px solid var(--line);} .diff:first-child{border-top:0;} .diff:nth-child(2){border-top:1px solid var(--line);} }
+  .diff .dico{width:30px; height:30px; margin-bottom:14px;}
+  .diff h4{font-size:14.5px; font-weight:600; margin:0 0 6px; letter-spacing:-0.01em;}
+  .diff p{font-size:13px; color:var(--muted); line-height:1.5; margin:0;}
+  .diff .mono{display:block; font-size:10.5px; letter-spacing:.12em; text-transform:uppercase; color:var(--faint); margin-top:10px;}
+
+  /* ============ footer ============ */
+  footer{border-top:1px solid var(--line); padding:44px 0 60px; color:var(--faint); font-size:13.5px;}
+  footer .disc{font-size:12.5px; line-height:1.6; max-width:780px; color:var(--faint); margin-top:18px;}
+  footer a{color:var(--muted);}
+  .footrow{display:flex; flex-wrap:wrap; gap:10px 24px; align-items:center; font-family:"IBM Plex Mono",monospace; font-size:12px; letter-spacing:.04em; text-transform:uppercase;}
+</style>
+
+<!-- ============================ TOP BAR ============================ -->
+<div class="topbar">
+  <div class="wrap">
+    <a class="brand" href="#top" aria-label="quaestor — start here">
+      <svg width="22" height="22" viewBox="0 0 22 22" fill="none" aria-hidden="true">
+        <circle cx="11" cy="11" r="9.2" stroke="var(--accent)" stroke-width="1.4"/>
+        <circle cx="11" cy="11" r="5.4" stroke="var(--accent)" stroke-width="1.1" opacity=".6"/>
+        <path d="M7.6 11.2l2.2 2.3 4.6-5" stroke="var(--green)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <span>quaestor</span>
+      <span class="tag">start here</span>
+    </a>
+    <button class="themetoggle" id="tg" type="button" aria-label="Toggle color theme">theme</button>
+  </div>
+</div>
+
+<!-- ============================ HERO ============================ -->
+<section class="hero" id="top">
+  <div class="wrap">
+    <div class="eyebrow">Autonomous verifiable options-trading agent · Alpaca 2026</div>
+    <div class="hero-grid">
+      <div>
+        <h1>An autonomous trading agent<br>whose every trade you can<br><span class="dim">verify, not trust.</span></h1>
+        <p class="answer">quaestor trades options on Alpaca inside a hermetic seal and returns every order as a <b>cryptographically signed, independently verifiable receipt</b> of the exact exchange conversation.</p>
+        <p class="sub">This is the front door. Start with the one command that needs no credentials, no network, no trust in us — it re-checks every signed receipt of the week, offline.</p>
+
+        <div class="cta">
+          <p class="cta-label">The single strongest thing to run first</p>
+          <div class="cmdbox">
+            <div class="cmdtext" id="cmd"><span class="prompt">$&nbsp;</span><span>make verify</span></div>
+            <button class="copybtn" id="copy" type="button" aria-label="Copy command to clipboard">
+              <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M3.5 10.5H3a1.5 1.5 0 0 1-1.5-1.5V3A1.5 1.5 0 0 1 3 1.5h6A1.5 1.5 0 0 1 10.5 3v.5" stroke="currentColor" stroke-width="1.3"/></svg>
+              <span id="copytxt">copy</span>
+            </button>
+          </div>
+          <p class="cta-note"><b>Offline. No credentials.</b> Re-checks every receipt's Ed25519 signature and the hash-chained ledger. Prefer a browser? Open <a href="verifier.html">the verifier</a> and click Verify.</p>
+        </div>
+
+        <div class="chips">
+          <span class="chip ok"><span class="dot"></span>seal HELD</span>
+          <span class="chip ac"><span class="dot"></span>Ed25519-signed</span>
+          <span class="chip cy"><span class="dot"></span>offline-verifiable</span>
+          <span class="chip"><span class="dot"></span>paper-api only</span>
+        </div>
+      </div>
+
+      <div class="seal-wrap">
+        <svg class="seal" viewBox="0 0 264 264" role="img" aria-label="A cryptographic signet: concentric rings around a verified checkmark, the mark of a signed and sealed receipt.">
+          <defs>
+            <radialGradient id="seal-glow" cx="50%" cy="50%" r="50%">
+              <stop offset="55%" stop-color="var(--accent)" stop-opacity="0"/>
+              <stop offset="100%" stop-color="var(--accent)" stop-opacity="0.10"/>
+            </radialGradient>
+          </defs>
+          <circle cx="132" cy="132" r="126" fill="url(#seal-glow)"/>
+          <g class="rotor" stroke="currentColor" stroke-width="1" opacity="0.55">
+            <circle cx="132" cy="132" r="118" fill="none" stroke-width="1"/>
+            <g>
+              <line x1="132" y1="14" x2="132" y2="26"/><line x1="132" y1="238" x2="132" y2="250"/>
+              <line x1="14" y1="132" x2="26" y2="132"/><line x1="238" y1="132" x2="250" y2="132"/>
+              <line x1="48.5" y1="48.5" x2="57" y2="57"/><line x1="207" y1="207" x2="215.5" y2="215.5"/>
+              <line x1="215.5" y1="48.5" x2="207" y2="57"/><line x1="57" y1="207" x2="48.5" y2="215.5"/>
+            </g>
+          </g>
+          <circle cx="132" cy="132" r="104" fill="none" stroke="currentColor" stroke-width="1.4" opacity="0.85"/>
+          <circle cx="132" cy="132" r="98" fill="none" stroke="currentColor" stroke-width="0.8" opacity="0.4"/>
+          <circle class="rotor rev" cx="132" cy="132" r="86" fill="none" stroke="var(--cyan)" stroke-width="1.2" stroke-dasharray="2 7" opacity="0.75"/>
+          <circle cx="132" cy="132" r="70" fill="var(--surface)" stroke="var(--line-strong)" stroke-width="1"/>
+          <path d="M104 133 l18 19 l40 -44" fill="none" stroke="var(--green)" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <div class="sigstrip mono">
+          <span class="k">algo</span> Ed25519 &middot; SHA-256 chain<br>
+          <span class="k">account</span> PA3OB6ZUD7WD &middot; <b>&#10003; verify offline</b>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ SURFACES ============================ -->
+<section id="surfaces">
+  <div class="wrap">
+    <div class="eyebrow"><span class="num">01</span> Every verifiable surface, one click away</div>
+    <div class="measure">
+      <h2>Open any of these — they all sit in this repo</h2>
+      <p class="lead">Six self-contained pages. Two you can poke at live in the browser, one live snapshot of mission control, a red-team report, and the product vision the primitive unlocks.</p>
+    </div>
+
+    <div class="surfaces">
+      <a class="surface" href="verifier.html">
+        <div class="s-top">
+          <svg class="s-ico" viewBox="0 0 32 32" fill="none" aria-hidden="true"><circle cx="16" cy="16" r="12" stroke="currentColor" stroke-width="1.6"/><path d="M11 16.3l3.4 3.5L22 12" stroke="var(--green)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="s-tag int">interactive</span>
+        </div>
+        <h3>Verify a receipt in your browser</h3>
+        <div class="s-file mono">dashboard/verifier.html</div>
+        <p>A real signed receipt and a WASM verifier compiled from the same Rust. Click Verify; then tamper one byte and watch the signature reject it.</p>
+        <span class="s-go mono">open verifier &rsaquo;</span>
+      </a>
+
+      <a class="surface" href="track-record.html">
+        <div class="s-top">
+          <svg class="s-ico" viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M5 24V8M5 24h22" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M8 20l5-6 4 3 6-9" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="s-tag int">interactive</span>
+        </div>
+        <h3>The agent's provable P&amp;L</h3>
+        <div class="s-file mono">dashboard/track-record.html</div>
+        <p>A track record you don't have to believe. Every position ties back to a signed receipt — Verify the record, then Tamper it to see a forgery caught live.</p>
+        <span class="s-go mono">open track record &rsaquo;</span>
+      </a>
+
+      <a class="surface" href="marketplace.html">
+        <div class="s-top">
+          <svg class="s-ico" viewBox="0 0 32 32" fill="none" aria-hidden="true"><rect x="5" y="6" width="9" height="9" rx="1.6" stroke="currentColor" stroke-width="1.6"/><rect x="18" y="6" width="9" height="9" rx="1.6" stroke="currentColor" stroke-width="1.6"/><rect x="5" y="19" width="9" height="7" rx="1.6" stroke="currentColor" stroke-width="1.6"/><path d="M18 22.5l2.4 2.5 4.6-5.5" stroke="var(--green)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="s-tag pit">pitch</span>
+        </div>
+        <h3>Alpaca Verified Agents</h3>
+        <div class="s-file mono">dashboard/marketplace.html</div>
+        <p>The product vision: a marketplace of autonomous agents ranked by a track record nobody can fake — the copy-trading layer signed receipts make possible.</p>
+        <span class="s-go mono">open marketplace &rsaquo;</span>
+      </a>
+
+      <a class="surface" href="console.html">
+        <div class="s-top">
+          <svg class="s-ico" viewBox="0 0 32 32" fill="none" aria-hidden="true"><rect x="4" y="6" width="24" height="18" rx="2" stroke="currentColor" stroke-width="1.6"/><path d="M9 13l3 3-3 3M15 19h6" stroke="var(--accent)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="s-tag live">live</span>
+        </div>
+        <h3>Mission control</h3>
+        <div class="s-file mono">dashboard/console.html</div>
+        <p>A live state snapshot: the seal status, the risk gates, the latest cycle and the receipt it minted — quaestor's cockpit at a glance.</p>
+        <span class="s-go mono">open console &rsaquo;</span>
+      </a>
+
+      <a class="surface" href="../scripts/red_team_report.html">
+        <div class="s-top">
+          <svg class="s-ico" viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M16 4l10 4v7c0 6.5-4.3 10.8-10 13-5.7-2.2-10-6.5-10-13V8l10-4z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M12 15.8l2.8 2.9L20 13" stroke="var(--red)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="s-tag rep">report</span>
+        </div>
+        <h3>Red-team: 4 ways to fake results, each caught</h3>
+        <div class="s-file mono">scripts/red_team_report.html</div>
+        <p>The four ways you'd fake a trading track record — edit a fill, forge a receipt, replay an order, rewrite history — and exactly how each one is caught.</p>
+        <span class="s-go mono">open red-team report &rsaquo;</span>
+      </a>
+
+      <a class="surface" href="../docs/alpaca-pitch.html">
+        <div class="s-top">
+          <svg class="s-ico" viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M7 25V9a2 2 0 0 1 2-2h10l6 6v12a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M19 7v6h6" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M11 17h10M11 21h7" stroke="var(--accent)" stroke-width="1.6" stroke-linecap="round"/></svg>
+          <span class="s-tag pit">pitch</span>
+        </div>
+        <h3>For Alpaca: the beyond-hackathon pitch</h3>
+        <div class="s-file mono">docs/alpaca-pitch.html</div>
+        <p>Why verifiable agent execution is the primitive your market doesn't have yet — the gap, the reference implementation, and what it unlocks for Alpaca.</p>
+        <span class="s-go mono">open the pitch &rsaquo;</span>
+      </a>
+    </div>
+
+    <p class="avail">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="6.4" stroke="currentColor" stroke-width="1.3"/><path d="M8 5v3.4l2.2 1.3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+      <span>All six are static HTML that live alongside this page (or one folder up). If a link 404s, that surface just hasn't been generated into the repo yet — the front door lists the full set by design.</span>
+    </p>
+  </div>
+</section>
+
+<!-- ============================ FOR JUDGES TOUR ============================ -->
+<section id="tour">
+  <div class="wrap">
+    <div class="eyebrow"><span class="num">02</span> For judges &mdash; a guided tour</div>
+    <div class="measure">
+      <h2>Fifteen minutes, from proof to internals</h2>
+      <p class="lead">Each leg stands on its own. Start at the top and stop whenever you're convinced — the first minute already carries the whole claim.</p>
+    </div>
+
+    <div class="tour">
+      <div class="leg">
+        <div class="t">1 min</div>
+        <div class="d">
+          <h3>Re-check every receipt, offline</h3>
+          <p>Run <code>make verify</code>, or open <a href="verifier.html">verifier.html</a> and click <b>Verify</b>. Every signed receipt of the week re-checks — no keys, no network.</p>
+        </div>
+      </div>
+      <div class="leg">
+        <div class="t">3 min</div>
+        <div class="d">
+          <h3>A provable P&amp;L, and a forgery caught</h3>
+          <p>Open <a href="track-record.html">track-record.html</a>, click <span class="k">Verify</span>, then <span class="k">Tamper</span> — watch the signature catch a forged fill live.</p>
+        </div>
+      </div>
+      <div class="leg">
+        <div class="t">5 min</div>
+        <div class="d">
+          <h3>Four ways to fake results, each caught</h3>
+          <p>Run <code>bash scripts/red_team.sh</code> (or read the <a href="../scripts/red_team_report.html">red-team report</a>): the four ways you'd fake trading results, and how each is defeated.</p>
+        </div>
+      </div>
+      <div class="leg">
+        <div class="t">10 min</div>
+        <div class="d">
+          <h3>How any Alpaca agent adopts this</h3>
+          <p>Read <code>docs/ARCHITECTURE.md</code> and skim <code>attested_alpaca/</code> — verifiable execution wraps an existing agent in a few lines via <code>AttestedAlpaca</code>.</p>
+        </div>
+      </div>
+      <div class="leg">
+        <div class="t">15 min</div>
+        <div class="d">
+          <h3>The sealed-egress tunnel itself</h3>
+          <p>Read <code>patches/bulla/</code> — how we patched a Rust sandbox so the agent trades <em>inside</em> the seal: TLS terminates in the cell, egress mediated to <code>paper-api.alpaca.markets:443</code>.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ WHAT MAKES THIS DIFFERENT ============================ -->
+<section id="different">
+  <div class="wrap">
+    <div class="eyebrow"><span class="num">03</span> What makes this different</div>
+    <div class="measure">
+      <h2>Not a backtest. A chain of evidence.</h2>
+      <p class="lead">Five properties compose into one guarantee: you can reconstruct and check exactly what the agent did, without trusting the agent, the operator, or us.</p>
+    </div>
+
+    <div class="diffs">
+      <div class="diff">
+        <svg class="dico" viewBox="0 0 32 32" fill="none" aria-hidden="true"><rect x="7" y="14" width="18" height="13" rx="2" stroke="var(--accent)" stroke-width="1.6"/><path d="M11 14v-3a5 5 0 0 1 10 0v3" stroke="var(--accent)" stroke-width="1.6"/><circle cx="16" cy="20" r="1.8" fill="var(--green)"/></svg>
+        <h4>Sealed live trading</h4>
+        <p>Each order is placed inside a hermetic no-root cell. TLS terminates in the seal; egress is mediated to <span class="mono">paper-api.alpaca.markets:443</span>.</p>
+        <span class="mono">seal HELD</span>
+      </div>
+      <div class="diff">
+        <svg class="dico" viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M16 4l10 4v7c0 6.5-4.3 10.8-10 13-5.7-2.2-10-6.5-10-13V8l10-4z" stroke="var(--accent)" stroke-width="1.6" stroke-linejoin="round"/><path d="M12 15.8l2.8 2.9L20 13" stroke="var(--green)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <h4>Signed receipts</h4>
+        <p>The exact request/response with the exchange is captured and Ed25519-signed into a hash-chained ledger — a tamper-evident record of every trade.</p>
+        <span class="mono">Ed25519 &middot; SHA-256</span>
+      </div>
+      <div class="diff">
+        <svg class="dico" viewBox="0 0 32 32" fill="none" aria-hidden="true"><circle cx="16" cy="16" r="12" stroke="var(--accent)" stroke-width="1.6"/><path d="M16 9v7l4.5 2.6" stroke="var(--cyan)" stroke-width="1.8" stroke-linecap="round"/><path d="M16 4v2M16 26v2M28 16h-2M6 16H4" stroke="var(--accent)" stroke-width="1.4" stroke-linecap="round"/></svg>
+        <h4>ZK risk proofs</h4>
+        <p>A zero-knowledge proof, bound to the <span class="mono">client_order_id</span>, attests worst-case loss stayed under <span class="mono">2<sup>16</sup> USD</span> — without revealing the position.</p>
+        <span class="mono">Bulletproofs</span>
+      </div>
+      <div class="diff">
+        <svg class="dico" viewBox="0 0 32 32" fill="none" aria-hidden="true"><circle cx="10" cy="10" r="4" stroke="var(--accent)" stroke-width="1.6"/><circle cx="23" cy="22" r="4" stroke="var(--accent)" stroke-width="1.6"/><path d="M13 12.5l7 7" stroke="var(--cyan)" stroke-width="1.6"/><path d="M6 22h6M20 6h6" stroke="var(--accent)" stroke-width="1.4" stroke-linecap="round"/></svg>
+        <h4>External anchor</h4>
+        <p>The ledger head is anchored to an independent timestamp, so history can't be quietly rewritten after the fact — the past is pinned.</p>
+        <span class="mono">anchored head</span>
+      </div>
+      <div class="diff">
+        <svg class="dico" viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M4 16l6-6M4 16l6 6M28 16l-6-6M28 16l-6 6" stroke="var(--accent)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M18 8l-4 16" stroke="var(--cyan)" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <h4>WASM verify</h4>
+        <p>The verifier compiles from the same Rust to WebAssembly, so anyone re-checks a receipt in the browser — no toolchain, no install, no trust.</p>
+        <span class="mono">verify anywhere</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ FOOTER ============================ -->
+<footer>
+  <div class="wrap">
+    <div class="footrow">
+      <span style="color:var(--ink); font-weight:600; letter-spacing:0;">quaestor</span>
+      <span>&middot;</span>
+      <a href="https://github.com/RARS-oss/quaestor">github.com/RARS-oss/quaestor</a>
+      <span>&middot;</span>
+      <span>Alpaca AI Trading Agents Hackathon 2026</span>
+      <span>&middot;</span>
+      <span>paper trading</span>
+    </div>
+    <p class="disc">
+      <b style="color:var(--muted)">Disclosure.</b> Not investment advice. Options trading involves significant risk and is not suitable for all investors. This project runs exclusively in Alpaca's paper-trading environment &mdash; simulated results do not represent actual trading and no live capital is at risk. See
+      <a href="https://alpaca.markets/disclosures">Alpaca's disclosures</a> and the
+      <a href="https://www.theocc.com/company-information/documents-and-archives/options-disclosure-document">Characteristics and Risks of Standardized Options</a>.
+    </p>
+  </div>
+</footer>
+
+<script>
+  (function(){
+    var root = document.documentElement, btn = document.getElementById('tg');
+    var KEY = 'quaestor-hub-theme';
+    function apply(t){ if(t==='dark'||t==='light'){ root.setAttribute('data-theme', t); } else { root.removeAttribute('data-theme'); } }
+    var saved = null;
+    try { saved = localStorage.getItem(KEY); } catch(e){}
+    if(saved){ apply(saved); }
+    function current(){
+      var explicit = root.getAttribute('data-theme');
+      if(explicit) return explicit;
+      return (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+    }
+    if(btn){
+      btn.addEventListener('click', function(){
+        var next = current()==='dark' ? 'light' : 'dark';
+        apply(next);
+        try { localStorage.setItem(KEY, next); } catch(e){}
+      });
+    }
+  })();
+
+  (function(){
+    var btn = document.getElementById('copy'), txt = document.getElementById('copytxt');
+    if(!btn) return;
+    var reset;
+    btn.addEventListener('click', function(){
+      var cmd = 'make verify';
+      function ok(){
+        btn.classList.add('done');
+        if(txt) txt.textContent = 'copied';
+        clearTimeout(reset);
+        reset = setTimeout(function(){ btn.classList.remove('done'); if(txt) txt.textContent = 'copy'; }, 1600);
+      }
+      try {
+        if(navigator.clipboard && navigator.clipboard.writeText){
+          navigator.clipboard.writeText(cmd).then(ok, fallback);
+        } else { fallback(); }
+      } catch(e){ fallback(); }
+      function fallback(){
+        try {
+          var ta = document.createElement('textarea');
+          ta.value = cmd; ta.setAttribute('readonly',''); ta.style.position='absolute'; ta.style.left='-9999px';
+          document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta); ok();
+        } catch(e2){ /* clipboard unavailable; command is visible to copy manually */ }
+      }
+    });
+  })();
+</script>

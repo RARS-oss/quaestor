@@ -30,6 +30,9 @@ bundle:            ## export the offline proof bundle (receipts + verifier + ind
 anchor:            ## witness the ledger head into the external anchor chain
 	$(PY) -m quaestor anchor
 
+replay:            ## re-derive sealed risk verdicts from signed inputs (determinism proof)
+	$(PY) -m quaestor replay
+
 red-team:          ## demonstrate the four fraud vectors, each caught
 	bash scripts/red_team.sh
 

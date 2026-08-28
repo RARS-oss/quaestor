@@ -17,4 +17,4 @@ dependencies = [
 ]
 
 [tool.setuptools]
-packages = ["quaestor"]
+packages = ["quaestor", "attested_alpaca"]

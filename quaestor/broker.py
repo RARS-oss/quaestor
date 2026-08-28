@@ -105,6 +105,20 @@ class Broker:
         self.settings = settings
         self.request_ids: list[str] = []       # every x-request-id ever seen, in order
         self.last_request_id: str = ""
+        # Sealed live trading: when running inside a bulla cell (an egress broker
+        # socket is present), route orders through the mediated tunnel so the whole
+        # exchange conversation is hash-chained into the signed receipt. Outside a
+        # cell there is no socket -> ordinary httpx, so the autonomous week is
+        # never on this experimental path. An explicit transport always wins.
+        self.sealed = False
+        if transport is None:
+            try:
+                from quaestor.sealed_transport import SealedHTTPTransport, egress_socket_path
+                if egress_socket_path() is not None:
+                    transport = SealedHTTPTransport()
+                    self.sealed = True
+            except Exception:  # sealed transport is best-effort; never block construction
+                transport = None
         headers = {
             "APCA-API-KEY-ID": settings.api_key,
             "APCA-API-SECRET-KEY": settings.api_secret,

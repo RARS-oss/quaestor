@@ -15,20 +15,21 @@ CELL="$HOME/.cache/quaestor-cells/sealed-demo"
 OUT="$HERE/receipts/sealed-demo.json"
 
 rm -rf "$CELL" && mkdir -p "$CELL"
-cp "$HERE/scripts/in_cell_probe.py" "$CELL/in_cell_probe.py"
+cp "$HERE/scripts/in_cell_sealed_order.py" "$CELL/in_cell_sealed_order.py"
 
-echo "== sealed live call: GET /v2/account from inside a SEAL-HELD cell =="
+echo "== sealed live order: place + cancel a real SPY option from inside a SEAL-HELD cell =="
 "$BULLA" run --work "$CELL" \
   --egress-allow paper-api.alpaca.markets:443 \
+  --egress-allow data.alpaca.markets:443 \
   --nondeterministic \
-  --wall-ms 30000 \
+  --wall-ms 45000 \
   --out "$OUT" \
   --ledger "$HERE/receipts/ledger.jsonl" \
   --key "$HERE/receipts/signing.seed" \
-  -- python3 /work/in_cell_probe.py
+  -- python3 /work/in_cell_sealed_order.py
 
 echo
-echo "cell said: $(cat "$CELL/probe_result.txt" 2>/dev/null || echo '(no output)')"
+echo "cell said: $(cat "$CELL/sealed_order_result.txt" 2>/dev/null || echo '(no output)')"
 echo
 echo "== verify offline =="
 "$BULLA" verify "$OUT"

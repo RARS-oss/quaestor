@@ -478,6 +478,61 @@ def cmd_verify() -> int:
     return 1 if bad else 0
 
 
+# ---------------------------------------------------------------------- anchor
+
+def cmd_anchor() -> int:
+    """Witness the run ledger's head into runs/anchor.jsonl (+ external push).
+
+    Anchors the sealed ledger head when receipts/sealed-ledger.jsonl exists,
+    otherwise the honest-mode receipts/ledger.jsonl. The witness line carries only
+    opaque digests, so pushing it to a public repo leaks no strategy while making
+    the ledger tail durable against truncation.
+    """
+    from quaestor.anchor import Anchor
+    from quaestor.config import load_settings
+
+    settings = load_settings()
+    anchor = Anchor(settings)
+    sealed = settings.receipts_dir / "sealed-ledger.jsonl"
+    honest = settings.receipts_dir / "ledger.jsonl"
+    ledger_path = sealed if sealed.exists() else honest
+
+    entry = anchor.anchor_from_ledger(str(ledger_path))
+    if not entry:
+        print(f"anchor: no ledger to witness (looked at {sealed.name} then {honest.name})")
+        return 1
+    _render_table(
+        f"anchor — witness of {ledger_path.name}",
+        ["field", "value"],
+        [[str(k), str(v)] for k, v in entry.items()],
+    )
+    if anchor.push_external(entry):
+        print("anchor: entry appended to the external witness (QUAESTOR_WITNESS_DIR).")
+    else:
+        print("anchor: external witness not configured "
+              "(set QUAESTOR_WITNESS_DIR + QUAESTOR_WITNESS_REPO to publish).")
+    return 0
+
+
+def cmd_anchor_verify() -> int:
+    """Recompute the runs/anchor.jsonl witness chain and print the verdict."""
+    from quaestor.anchor import Anchor
+    from quaestor.config import load_settings
+
+    settings = load_settings()
+    anchor = Anchor(settings)
+    result = anchor.verify_anchor_chain()
+    _render_table(
+        "anchor chain", ["field", "value"], [[str(k), str(v)] for k, v in result.items()]
+    )
+    if result.get("ok"):
+        print(f"anchor-verify: chain intact over {result.get('entries')} entr"
+              f"{'y' if result.get('entries') == 1 else 'ies'} ✓")
+        return 0
+    print(f"anchor-verify: chain BROKEN at entry {result.get('break_at')} ✗")
+    return 1
+
+
 # --------------------------------------------------------------------- flatten
 
 def cmd_flatten() -> int:
@@ -685,6 +740,28 @@ def cmd_flatten() -> int:
     return 1 if failures else 0
 
 
+# ---------------------------------------------------------------------- bundle
+
+def cmd_bundle(out: str | None = None) -> int:
+    """Assemble the offline proof bundle and print its path + a one-line summary."""
+    from pathlib import Path
+
+    from quaestor.bundle import build_bundle, stats_from_receipts
+    from quaestor.config import load_settings
+
+    settings = load_settings()
+    out_dir = Path(out).expanduser() if out else None
+    bundle_dir = build_bundle(settings, out_dir)
+    stats = stats_from_receipts(bundle_dir / "receipts")
+    print(f"bundle: {bundle_dir}")
+    print(
+        f"  {stats['total']} receipts "
+        f"({stats['sealed']} sealed / {stats['decision']} decision, "
+        f"{stats['seal_held']} seal-held); open index.html to verify offline"
+    )
+    return 0
+
+
 # ------------------------------------------------------------------------ main
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -701,6 +778,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="seconds between decision cycles during market hours (default: 300)",
     )
     sub.add_parser("verify", help="verify all bulla receipts + print the ledger summary")
+    sub.add_parser("anchor", help="witness the ledger head into runs/anchor.jsonl (+ external push)")
+    sub.add_parser("anchor-verify", help="recompute + verify the anchor.jsonl witness chain")
+    bundle_parser = sub.add_parser(
+        "bundle",
+        help="package the week (receipts + verifier + index) for offline verification",
+    )
+    bundle_parser.add_argument(
+        "--out", type=str, default=None, metavar="DIR",
+        help="output folder for the bundle (default: runs/bundle)",
+    )
     sub.add_parser("flatten", help="emergency: close every open option position (audited)")
     reh = sub.add_parser("rehearse", help="dress rehearsal: full decision path on live data, no trading")
     reh.add_argument("--place-order", action="store_true",
@@ -719,6 +806,12 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_loop(args.interval)
         if args.command == "verify":
             return cmd_verify()
+        if args.command == "anchor":
+            return cmd_anchor()
+        if args.command == "anchor-verify":
+            return cmd_anchor_verify()
+        if args.command == "bundle":
+            return cmd_bundle(args.out)
         if args.command == "rehearse":
             return cmd_rehearse(place_order=args.place_order)
         if args.command == "flatten":

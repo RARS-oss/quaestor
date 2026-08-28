@@ -111,6 +111,11 @@ class Agent:
             print(f"[quaestor] receipts unavailable: {exc!r}", file=sys.stderr)
             self.receipts = None
         self.zk = ZkProver()  # fail-open by design: proofs are None when unavailable
+        try:
+            from quaestor.anchor import Anchor
+            self.anchor = Anchor(settings)   # external witness of each cycle's ledger head
+        except Exception:
+            self.anchor = None
         # Sealed execution (Phase A): opt-in via QUAESTOR_SEALED so the normal week
         # is never on the experimental path unless we choose it. When on, every
         # cycle's real orders are placed inside a bulla cell over the tunnel.
@@ -299,6 +304,15 @@ class Agent:
         if receipt_path is not None:
             rec.receipt_path = str(receipt_path)
             notes.append(f"sealed execution receipt: {receipt_path}")
+            # External witness: anchor the sealed ledger head so the week's tail
+            # can't be silently truncated. Best-effort; never blocks trading.
+            if self.anchor is not None:
+                try:
+                    entry = self.anchor.anchor_from_ledger(str(self.sealed_executor.ledger_path))
+                    if entry:
+                        self.anchor.push_external(entry)
+                except Exception as exc:
+                    notes.append(f"anchor failed (continuing): {exc!r}")
         else:
             notes.append("sealed execution produced no receipt; orders may not have been placed")
 

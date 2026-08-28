@@ -263,6 +263,26 @@ class Agent:
   path; the sealed tunnel is demonstrated per-order (proven end-to-end) so an
   experimental tunnel bug can never halt trading.
 
+## Phase A — the whole week under seal (opt-in QUAESTOR_SEALED=1)
+- `quaestor/sealed_exec.py` (SealedExecutor) places a cycle's approved orders
+  from INSIDE one bulla cell over the mediated tunnel → one signed receipt per
+  cycle, chained into `receipts/sealed-ledger.jsonl` (the week's execution
+  ledger). `scripts/in_cell_execute.py` is the stdlib in-cell placer
+  (submit/poll/cancel, captures every x-request-id). The agent auto-routes
+  execution through it when QUAESTOR_SEALED is set (marketable-limit crossing
+  applied first); otherwise the normal `broker.execute` path runs. Cells live on
+  ext4 (`~/.cache/quaestor-cells/`); `--nondeterministic` passes ALPACA_* in;
+  seal stays HELD.
+- External anchor (`quaestor/anchor.py`): each cycle's ledger head is appended to
+  `runs/anchor.jsonl` (self-chaining) and optionally pushed to an external
+  append-only witness (QUAESTOR_WITNESS_REPO) — closes the tail-truncation hole.
+- Proof bundle (`quaestor bundle`) packages receipts + ledgers + anchor + the
+  WASM verifier + a generated index.html: a judge verifies the whole week offline.
+- Track record (`scripts/generate_track_record.py` → `dashboard/track-record.html`):
+  the product surface — a self-contained, in-browser-verifiable page of the
+  agent's signed, anchored P&L. "Provable agent performance", the primitive an
+  agent marketplace / copy-trading layer would build on.
+
 ## Non-negotiable coding standards
 - Python 3.12, stdlib + httpx + pyyaml + alpaca-py + openai only. Type hints everywhere.
 - No placeholder/TODO code — everything runnable. No network in unit tests (fixtures only).

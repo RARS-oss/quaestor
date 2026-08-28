@@ -31,6 +31,7 @@ Alpaca facts encoded here:
 from __future__ import annotations
 
 import inspect
+import json
 import signal as _signal
 import sys
 import time
@@ -531,19 +532,33 @@ class Agent:
             f"[quaestor] loop started: interval={interval_s}s "
             f"session={self.audit.session_dir}"
         )
+        # Unattended-run safety: a run of consecutive hard failures trips a breaker
+        # (something is badly wrong — stop rather than spin); a HALT file is a manual
+        # kill switch; a heartbeat file lets an operator see the loop is alive.
+        max_consecutive_errors = int(
+            self.policy.get("loop", {}).get("max_consecutive_errors", 8)
+        )
+        halt_file = Path(self.settings.runs_dir) / "HALT"
+        consecutive_errors = 0
         try:
             while not self._stop:
+                if halt_file.exists():
+                    print("[quaestor] HALT file present — stopping loop (manual kill switch).")
+                    break
                 try:
                     if self._market_open_now():
                         rec = self.run_cycle()
+                        consecutive_errors = 0  # a completed cycle clears the breaker
                         approved = sum(1 for v in rec.verdicts if v.get("approved"))
                         print(
                             f"[quaestor] cycle {rec.cycle_id}: intents={len(rec.intents)} "
                             f"approved={approved} executed={len(rec.executions)} "
                             f"notes={len(rec.notes)}"
                         )
+                        self._heartbeat("cycle", rec.cycle_id)
                         self._sleep(float(interval_s), watch_events=True)
                     else:
+                        self._heartbeat("closed", "")
                         wait = self._seconds_until_next_open()
                         print(
                             f"[quaestor] market closed — sleeping {int(wait)}s until next open"
@@ -551,6 +566,23 @@ class Agent:
                         self._sleep(wait)
                 except KeyboardInterrupt:
                     self._stop = True
+                except Exception as exc:  # run_cycle catches internally; this is defense-in-depth
+                    consecutive_errors += 1
+                    print(
+                        f"[quaestor] cycle raised ({consecutive_errors}/{max_consecutive_errors}): "
+                        f"{exc!r}",
+                        file=sys.stderr,
+                    )
+                    self._heartbeat("error", repr(exc)[:120])
+                    if consecutive_errors >= max_consecutive_errors:
+                        print(
+                            "[quaestor] circuit breaker tripped — too many consecutive "
+                            "failures; stopping loop.",
+                            file=sys.stderr,
+                        )
+                        break
+                    # Exponential-ish backoff, capped, so a persistent fault doesn't spin.
+                    self._sleep(min(interval_s, 15.0 * consecutive_errors))
         finally:
             if previous_handler is not None:
                 try:
@@ -559,6 +591,23 @@ class Agent:
                     pass
             self._save_portfolio([])
             print("[quaestor] loop stopped; portfolio state saved.")
+
+    def _heartbeat(self, state: str, detail: str) -> None:
+        """Write a small liveness file the operator/dashboard can watch. Best-effort."""
+        try:
+            hb = Path(self.settings.runs_dir) / "heartbeat.json"
+            hb.write_text(
+                json.dumps({
+                    "ts": time.time(),
+                    "now_et": self._now_et().isoformat(),
+                    "state": state,
+                    "detail": detail,
+                    "session": str(self.audit.session_dir),
+                }),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
 
     def _catalyst_due(self) -> bool:
         try:

@@ -254,6 +254,188 @@ def cmd_loop(interval: int) -> int:
     return 0
 
 
+# --------------------------------------------------------------------- rehearse
+
+def cmd_rehearse(place_order: bool = False) -> int:
+    """Dress rehearsal: exercise the full decision path against LIVE data without
+    trading (data -> signals -> strategy -> risk -> order payloads). With
+    --place-order, also submit + cancel one real unfillable order to prove the
+    execution path is live today. Safe to run when the market is closed."""
+    from datetime import date, timedelta
+
+    from quaestor import clock
+    from quaestor import orders as orders_mod
+    from quaestor import risk as risk_mod
+    from quaestor import signals as signals_mod
+    from quaestor import strategy as strategy_mod
+    from quaestor import universe as universe_mod
+    from quaestor.broker import Broker
+    from quaestor.config import load_calendar, load_policy, load_settings
+    from quaestor.data import MarketData
+    from quaestor.models import (
+        Leg, PositionIntent, Side, Structure, TradeIntent,
+    )
+
+    ok = True
+
+    def check(label: str, passed: bool, detail: str = "") -> None:
+        nonlocal ok
+        ok = ok and passed
+        mark = "PASS" if passed else "FAIL"
+        line = f"  [{mark}] {label}"
+        print(line + (f" — {detail}" if detail else ""))
+
+    print("quaestor dress rehearsal\n" + "=" * 40)
+    settings = load_settings()
+    policy = load_policy()
+    calendar = load_calendar()
+    now = clock.now_et()
+    print(f"  now (ET): {now.isoformat()}  market_open={clock.is_market_open_now()}")
+
+    # 1. account / paper gate
+    broker = Broker(settings)
+    try:
+        acct = broker.account_snapshot()
+        check("account + paper gate", settings.paper and acct.equity > 0,
+              f"{acct.equity:,.0f} equity, options L{acct.options_trading_level}, sealed={broker.sealed}")
+        check("options level 3 (spreads)", acct.options_trading_level >= 3,
+              f"L{acct.options_trading_level}")
+    except Exception as exc:
+        check("account snapshot", False, repr(exc))
+        acct = None
+
+    # 2. live market data
+    data = MarketData(settings)
+    core = list(dict.fromkeys(universe_mod.UNDERLYINGS))
+    try:
+        snaps = data.stock_snapshot(core)
+        bars = data.stock_bars(core, timeframe="5Min", lookback_minutes=390)
+        have_bars = sum(1 for u in core if bars.get(u))
+        check("stock snapshots + bars", have_bars > 0,
+              f"{have_bars}/{len(core)} underlyings have bars")
+    except Exception as exc:
+        check("stock data", False, repr(exc))
+        snaps, bars = {}, {}
+
+    # 3. option chain + greeks
+    gte = now.date().isoformat()
+    lte = (now.date() + timedelta(days=7)).isoformat()
+    chains: dict[str, dict] = {}
+    contracts: dict[str, list] = {}
+    for u in core:
+        try:
+            contracts[u] = universe_mod.discover_contracts(
+                settings, u, expiry_gte=gte, expiry_lte=lte, strike_band_pct=0.06)
+            chains[u] = data.option_chain(u, expiry_gte=gte, expiry_lte=lte)
+        except Exception as exc:
+            check(f"option chain {u}", False, repr(exc))
+            chains[u], contracts[u] = {}, []
+    total_contracts = sum(len(c) for c in contracts.values())
+    with_greeks = sum(
+        1 for ch in chains.values() for q in ch.values() if q.get("delta") is not None)
+    check("option chains discovered", total_contracts > 0,
+          f"{total_contracts} contracts across {len(core)}")
+    check("greeks present (may be sparse off-hours)", True,
+          f"{with_greeks} quotes carry delta (informational)")
+
+    # 4. full decision path (no execution)
+    try:
+        sigs = signals_mod.compute(bars, snaps)
+        sig_desc = ", ".join(f"{u}:{s.direction:+d}@{s.strength:.2f}" for u, s in sigs.items())
+        check("signals computed", len(sigs) > 0, sig_desc)
+    except Exception as exc:
+        check("signals", False, repr(exc))
+        sigs = {}
+
+    intents = []
+    if acct is not None:
+        try:
+            ctx = strategy_mod.Context(
+                settings=settings, policy=policy, calendar=calendar, account=acct,
+                portfolio=_rehearsal_portfolio(settings, acct, now),
+                signals=sigs, sentiment={}, chains=chains, contracts=contracts,
+                now=now, due_events=list(clock.due_catalysts(calendar, now, set())),
+            )
+            intents = list(strategy_mod.decide(ctx))
+            check("strategy.decide ran", True,
+                  f"{len(intents)} intent(s) on current data "
+                  f"(0 is normal when signals are flat / market closed)")
+        except Exception as exc:
+            check("strategy.decide", False, repr(exc))
+
+    # judge + build payloads for whatever intents came out
+    portfolio_state = {"halted_today": False, "halted_week": False, "day_pnl_pct": 0.0,
+                       "week_pnl_pct": 0.0, "open_position_count": 0, "underlying_exposure": {}}
+    for it in intents:
+        try:
+            verdict = risk_mod.judge(it, policy=policy, account=acct,
+                                     portfolio_state=portfolio_state,
+                                     chain=chains.get(it.underlying, {}), now=now)
+            payload = orders_mod.build_order_payload(it, attempt=0)
+            print(f"    intent {it.structure.value} {it.underlying}: "
+                  f"approved={verdict.approved} legs={len(payload.get('legs', [payload]))} "
+                  f"limit={payload.get('limit_price')}")
+            if not verdict.approved:
+                print(f"      rejected: {'; '.join(verdict.reasons)}")
+        except Exception as exc:
+            check(f"judge/build for {it.intent_id}", False, repr(exc))
+
+    # 5. forced order-path proof (optional): a real, unfillable spread, cancelled at once
+    if place_order and acct is not None:
+        try:
+            _prove_order_path(broker, settings, chains, contracts, now, check,
+                              Leg, Side, PositionIntent, Structure, TradeIntent, orders_mod)
+        except Exception as exc:
+            check("order path (submit+cancel)", False, repr(exc))
+    elif not place_order:
+        print("  [skip] order path proof (pass --place-order to submit+cancel a real test order)")
+
+    broker.close()
+    print("=" * 40)
+    print("REHEARSAL: " + ("ALL GREEN ✓" if ok else "some checks FAILED ✗"))
+    return 0 if ok else 1
+
+
+def _rehearsal_portfolio(settings, account, now):
+    from quaestor.portfolio import PortfolioState
+    pf = PortfolioState(settings.runs_dir / "portfolio_state.json")
+    try:
+        pf.refresh(account, now)
+    except Exception:
+        pass
+    return pf
+
+
+def _prove_order_path(broker, settings, chains, contracts, now, check,
+                      Leg, Side, PositionIntent, Structure, TradeIntent, orders_mod):
+    """Build a deep-OTM SPY debit vertical from live contracts, submit at $0.01
+    (won't fill), confirm acceptance, cancel. Proves the real mleg order path."""
+    spy = contracts.get("SPY", [])
+    calls = sorted(
+        (c for c in spy if str(c.get("type")) == "call" and c.get("tradable", True)),
+        key=lambda c: float(c.get("strike_price", 0)))
+    if len(calls) < 2:
+        check("order path (submit+cancel)", False, "not enough SPY call contracts")
+        return
+    buy_c, sell_c = calls[-2], calls[-1]  # two deepest-OTM adjacent strikes
+    intent = TradeIntent(
+        underlying="SPY", structure=Structure.VERTICAL_DEBIT,
+        legs=[Leg(buy_c["symbol"], Side.BUY, 1, PositionIntent.BUY_TO_OPEN),
+              Leg(sell_c["symbol"], Side.SELL, 1, PositionIntent.SELL_TO_OPEN)],
+        qty=1, limit_price=0.01,
+        thesis="rehearsal — unfillable, cancel at once", max_loss_usd=1.0,
+    )
+    payload = orders_mod.build_order_payload(intent, attempt=1)
+    order, rid = broker.submit(payload)
+    accepted = str(order.get("status", "")) in ("accepted", "new", "pending_new", "held")
+    check("order path: submit accepted", accepted,
+          f"{buy_c['symbol']}/{sell_c['symbol']} status={order.get('status')} rid={rid[:8]}")
+    oid = order.get("id", "")
+    if oid:
+        broker.cancel(oid)
+        check("order path: cancel", True, "order canceled")
+
+
 # ---------------------------------------------------------------------- verify
 
 def cmd_verify() -> int:
@@ -520,6 +702,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sub.add_parser("verify", help="verify all bulla receipts + print the ledger summary")
     sub.add_parser("flatten", help="emergency: close every open option position (audited)")
+    reh = sub.add_parser("rehearse", help="dress rehearsal: full decision path on live data, no trading")
+    reh.add_argument("--place-order", action="store_true",
+                     help="also submit + cancel one real unfillable order to prove the execution path")
     return parser
 
 
@@ -534,6 +719,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_loop(args.interval)
         if args.command == "verify":
             return cmd_verify()
+        if args.command == "rehearse":
+            return cmd_rehearse(place_order=args.place_order)
         if args.command == "flatten":
             return cmd_flatten()
     except KeyboardInterrupt:

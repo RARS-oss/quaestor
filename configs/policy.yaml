@@ -31,3 +31,6 @@ execution:
   repost_after_s: 8                # cancel-and-repost loop for unfilled marketable limits
   max_reposts: 5
   order_poll_interval_s: 1.5
+loop:
+  max_consecutive_errors: 8        # unattended breaker: stop after this many failing cycles in a row
+  # A file named HALT in runs/ is a manual kill switch; heartbeat.json shows liveness.

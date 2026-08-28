@@ -1,0 +1,33 @@
+# quaestor risk policy v1 — this file is hashed (sha256) into every RiskVerdict and bulla receipt.
+# Changing it changes policy_digest -> visible in the audit trail. Never bypass in code.
+version: 1
+account:
+  daily_loss_halt_pct: 15          # stop opening new positions for the day at -15% equity vs day open
+  weekly_loss_halt_pct: 30         # hard stop for the rest of the contest
+  max_concurrent_positions: 3
+  max_underlying_concentration_pct:
+    default: 40
+    SPY: 60
+    QQQ: 60
+per_trade:
+  max_loss_pct_default: 10         # of current equity, worst-case defined risk
+  max_loss_pct_catalyst: 20        # catalyst_tag != "" allows bigger conviction shots
+  min_open_interest: 100
+  max_spread_quality: 0.03         # (ask - bid) / mid must be <= 3% on every leg
+  min_leg_price: 0.05              # avoid sub-nickel junk contracts
+structures:
+  allowed: [long_call, long_put, vertical_debit, vertical_credit, straddle, close]
+  defined_risk_only: true          # every short leg must be covered within the same order (mleg rule)
+timing:
+  no_new_0dte_after_et: "15:10"
+  flat_0dte_by_et: "15:25"
+  no_new_positions_after_et: "15:45"
+  final_day: "2026-09-04"
+  final_day_all_cash_by_et: "10:30"   # realize all P&L before the 11:00 EDT submission deadline
+execution:
+  time_in_force: day
+  marketable_buffer_usd: 0.02      # single-leg: buy at ask+buffer, sell at bid-buffer
+  mleg_buffer_usd: 0.05            # net-price buffer over sum of touches
+  repost_after_s: 8                # cancel-and-repost loop for unfilled marketable limits
+  max_reposts: 5
+  order_poll_interval_s: 1.5

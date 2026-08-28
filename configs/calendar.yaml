@@ -1,0 +1,28 @@
+# Catalyst calendar for the contest window (all times US/Eastern).
+# status: confirmed = source-verified; inferred = pattern-based, re-verify before trading it.
+# The agent's catalyst playbooks key off `tag`.
+week:
+  - date: 2026-08-31
+    events:
+      - {time: "09:30", tag: MONTH_END, desc: "Month-end flows day", status: confirmed}
+  - date: 2026-09-01
+    events:
+      - {time: "10:00", tag: ISM_MFG, desc: "ISM Manufacturing PMI", status: inferred}
+      - {time: "10:00", tag: JOLTS, desc: "JOLTS job openings (BLS confirmed)", status: confirmed}
+  - date: 2026-09-02
+    events:
+      - {time: "08:15", tag: ADP, desc: "ADP employment", status: inferred}
+      - {time: "14:00", tag: BEIGE_BOOK, desc: "Fed Beige Book", status: inferred}
+  - date: 2026-09-03
+    events:
+      - {time: "08:30", tag: CLAIMS, desc: "Initial jobless claims", status: inferred}
+      - {time: "10:00", tag: ISM_SVC, desc: "ISM Services PMI", status: inferred}
+      - {time: "16:05", tag: AVGO_EARNINGS, desc: "Broadcom earnings AMC (QQQ/SMH gap risk Friday)", status: inferred}
+  - date: 2026-09-04
+    events:
+      - {time: "08:30", tag: NFP, desc: "August jobs report — 2.5h before submission deadline", status: confirmed}
+      - {time: "09:30", tag: NFP_OPEN_PLAY, desc: "Post-NFP open playbook window", status: confirmed}
+      - {time: "10:30", tag: ALL_CASH, desc: "Flatten everything — realize P&L before 11:00 EDT deadline", status: confirmed}
+regime:
+  vix_range: [14, 16]          # 2026 lows — long premium historically cheap
+  bias: "long-premium barbell: defined-risk debit core + catalyst convexity shots"

@@ -1,0 +1,28 @@
+# Secrets — never commit credentials
+.env
+
+# Runtime state and audit output (file-based state, regenerated per session)
+runs/
+receipts/
+.sbx/
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+
+# Test / tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/

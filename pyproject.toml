@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quaestor"
+version = "0.1.0"
+description = "Autonomous options-trading agent for the Alpaca AI Trading Agents Hackathon (paper trading only)."
+readme = "docs/ARCHITECTURE.md"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx",
+    "pyyaml",
+    "python-dotenv",
+    "alpaca-py",
+    "openai",
+]
+
+[tool.setuptools]
+packages = ["quaestor"]

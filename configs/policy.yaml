@@ -17,7 +17,8 @@ per_trade:
   max_loss_pct_default: 12         # of current equity, worst-case defined risk
   max_loss_pct_catalyst: 22        # catalyst/conviction shots (the convex bets)
   min_open_interest: 100
-  max_spread_quality: 0.03         # (ask - bid) / mid must be <= 3% on every leg
+  max_spread_quality: 0.03         # (ask - bid) / mid <= 3% per leg, OR...
+  max_abs_spread: 0.05             # ...an absolute spread <= $0.05 (penny wings pass)
   min_leg_price: 0.05              # avoid sub-nickel junk contracts
 structures:
   allowed: [long_call, long_put, vertical_debit, vertical_credit, straddle, close]

@@ -44,6 +44,7 @@ from typing import Any, Callable
 
 from quaestor import clock
 from quaestor import orders as orders_mod
+from quaestor import regime as regime_mod
 from quaestor import risk as risk_mod
 from quaestor import sentiment as sentiment_mod
 from quaestor import signals as signals_mod
@@ -484,6 +485,22 @@ class Agent:
         except Exception:
             senti = {}  # sentiment NEVER blocks trading
 
+        # Classify the day's regime per underlying (trend/range/storm) — gates the
+        # income sleeve (range only) vs the long-convexity playbooks (trend).
+        regimes: dict[str, str] = {}
+        for u in core:
+            ubars = bars.get(u, []) or []
+            spot = 0.0
+            for b in reversed(ubars):
+                c = b.get("c")
+                if c is not None:
+                    spot = float(c)
+                    break
+            try:
+                regimes[u] = regime_mod.classify(ubars, chains.get(u, {}), spot)
+            except Exception:
+                regimes[u] = regime_mod.UNKNOWN
+
         intents: list[TradeIntent] = []
         try:
             ctx = strategy_mod.Context(
@@ -498,6 +515,7 @@ class Agent:
                 contracts=contracts,
                 now=now,
                 due_events=due_events,
+                regimes=regimes,
             )
             intents = list(strategy_mod.decide(ctx))
             events_consumed = True  # strategy actually saw due_events — safe to mark fired

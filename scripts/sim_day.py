@@ -274,9 +274,18 @@ def _qqq_path() -> list[float]:
 
 # --------------------------------------------------------------------- run
 
+def _range_path(base: float) -> list[float]:
+    """A quiet, contained oscillation — a RANGE day (income sleeve should fire)."""
+    return [round(base + 0.6 * math.sin(i * 0.7), 2) for i in range(79)]
+
+
 def main() -> int:
+    mode = sys.argv[2] if len(sys.argv) > 2 else "trend"
     start = datetime.combine(SIM_DATE, dtime(9, 30), tzinfo=ET)
-    spy, qqq = _spy_path(), _qqq_path()
+    if mode == "range":
+        spy, qqq = _range_path(660.0), _range_path(585.0)
+    else:
+        spy, qqq = _spy_path(), _qqq_path()
     mkt = DayMarket(now=start, spots={"SPY": spy[0], "QQQ": qqq[0]},
                     path={"SPY": spy, "QQQ": qqq})
 

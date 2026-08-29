@@ -5,9 +5,16 @@ option chains and open positions and proposes fully-specified TradeIntents.
 It NEVER talks to the network; risk.judge() gates every intent afterwards and
 broker.execute() does the marketable-limit dance.
 
-Playbooks — an AGGRESSIVE CONVEX BARBELL, all defined-risk long premium so the
-worst case is always the premium paid (the aggregate-risk gate in risk.judge
-hard-bounds the whole book):
+A regime-gated BARBELL: sell defined-risk premium (income) on machine-classified
+range days, buy convexity on trend days, stand down in a storm — so the book has
+a source of P&L in a quiet week AND right-tail convexity on moves. Entries are
+gated per underlying by quaestor.regime (the one component with a documented live
+P&L effect); the aggregate-risk gate in risk.judge hard-bounds the whole book.
+
+Playbooks:
+1b. Income sleeve (RANGE days only): 0-1DTE iron condor, shorts ~0.18d, defined
+   risk, net credit; take 55% / stop 2.2x / 0DTE curfew. The quiet-week earner.
+The convex sleeve (TREND days, all defined-risk long premium):
 0. High-conviction directional long (strength >= 0.78, non-opposing sentiment):
    a single near-the-money 0-1 DTE call/put — convex upside, sized to the
    conviction cap. The bet that makes iks.
@@ -43,11 +50,12 @@ Alpaca facts encoded:
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Iterator
 from zoneinfo import ZoneInfo
 
+from quaestor import regime as regime_mod
 from quaestor.models import (
     AccountSnapshot,
     Leg,
@@ -77,6 +85,12 @@ VERTICAL_MAX_DTE: int = 3
 ATM_DELTA: float = 0.50
 STOP_PLPC: float = -0.5          # close at -50% of debit
 TARGET_PLPC: float = 1.5         # let convex winners run further (+150% of debit)
+# Income sleeve (range days): sell defined-risk premium, take 55%, stop 2.2x credit.
+CONDOR_SHORT_DELTA: float = 0.18     # short strikes ~1x expected move
+CONDOR_LONG_DELTA: float = 0.08      # protection wings further OTM
+MIN_CONDOR_CREDIT: float = 0.15      # skip when premium is too thin to be worth it (VIX ~14)
+INCOME_TAKE_FRAC: float = 0.55       # buy back once 55% of the credit is captured
+INCOME_STOP_MULT: float = 2.2        # stop when it costs 2.2x the credit to close
 FLAT_0DTE_LEAD_MIN: int = 10     # start flattening 0DTE this many min before deadline
 FLATTEN_TAG: str = "ALL_CASH"
 # Which calendar tags fire the straddle playbook, and on which underlying.
@@ -109,6 +123,7 @@ class Context:
     contracts: dict[str, list[dict]]         # underlying -> discovered contracts
     now: datetime
     due_events: list[dict]
+    regimes: dict[str, str] = field(default_factory=dict)   # underlying -> trend/range/storm
 
 
 def decide(ctx: Context) -> list[TradeIntent]:
@@ -124,16 +139,114 @@ def decide(ctx: Context) -> list[TradeIntent]:
     if all_cash:
         return intents
 
+    # Regime gates entries per underlying (the one component with a documented live
+    # P&L effect): STORM -> stand down; RANGE -> sell premium (income sleeve), never
+    # buy naive long debits; TREND/UNKNOWN -> long convexity. Catalyst plays are
+    # event-driven and override the trend/range split, but a STORM suppresses all
+    # new entries. Priority per underlying: catalyst > income > conviction > vertical.
     chosen: list[TradeIntent] = []
     seen: set[str] = set()
-    for group in (_catalyst_plays(ctx), _conviction_directionals(ctx), _core_verticals(ctx)):
+    groups = (_catalyst_plays(ctx), _income_condors(ctx),
+              _conviction_directionals(ctx), _core_verticals(ctx))
+    for group in groups:
         for it in group:
             if it.underlying in seen:      # one fresh entry per underlying per cycle
+                continue
+            reg = (ctx.regimes or {}).get(it.underlying, regime_mod.UNKNOWN)
+            if reg == regime_mod.STORM:
+                continue                   # stand down entirely in a storm
+            is_income = it.structure is Structure.VERTICAL_CREDIT
+            # A genuine calendar-EVENT play overrides the regime split; "CONVICTION"
+            # is only a sizing tag, not an event, so it is still gated by regime.
+            is_event = bool(it.catalyst_tag) and it.catalyst_tag != "CONVICTION"
+            if is_event:
+                allow = True               # events fire on any non-storm regime
+            elif is_income:
+                allow = reg == regime_mod.RANGE      # sell premium only on a range day
+            else:
+                allow = reg == regime_mod.TREND      # buy premium only on a confirmed trend
+            if not allow:                  # UNKNOWN (pre-classification) -> wait, no blind entry
                 continue
             chosen.append(it)
             seen.add(it.underlying)
     intents.extend(chosen)
     return intents
+
+
+# --- playbook 1b: income sleeve (range days only) — sell defined-risk premium --
+
+def _income_condors(ctx: Context) -> list[TradeIntent]:
+    """0-1DTE iron condor on a machine-classified RANGE day: sell ~0.18d call/put,
+    buy further-OTM wings for defined risk, net credit. This is the only source of
+    P&L in a quiet week — turns a theta-bleeding day into income. Exits at 55% of
+    credit / 2.2x stop / 0DTE curfew (handled in exit management)."""
+    out: list[TradeIntent] = []
+    equity = float(ctx.account.equity)
+    for u in CORE_UNDERLYINGS:
+        if (ctx.regimes or {}).get(u, regime_mod.UNKNOWN) != regime_mod.RANGE:
+            continue
+        if _has_option_position(ctx.account.positions, u):
+            continue                       # don't stack income on an existing book
+        chain = (ctx.chains or {}).get(u) or {}
+        contracts = (ctx.contracts or {}).get(u) or []
+        if not chain or not contracts:
+            continue
+        expiry = _choose_expiry(contracts, 0, ctx.now)
+        if expiry is None:
+            continue
+        dte = (expiry - _as_et(ctx.now).date()).days
+        if dte < 0 or dte > 1:
+            continue
+
+        def _sub(typ: str) -> dict[str, dict]:
+            return {occ: q for occ, q in chain.items()
+                    if (m := _occ_meta(occ)) is not None and m["expiry"] == expiry
+                    and m["type"] == typ and _mid(q) is not None}
+        calls, puts = _sub("C"), _sub("P")
+        sc = _choose_strike(calls, CONDOR_SHORT_DELTA, "C")
+        sp = _choose_strike(puts, CONDOR_SHORT_DELTA, "P")
+        if sc is None or sp is None:
+            continue
+        sc_k, sp_k = _occ_meta(sc)["strike"], _occ_meta(sp)["strike"]
+        lc = _choose_strike({k: v for k, v in calls.items()
+                             if _occ_meta(k)["strike"] > sc_k}, CONDOR_LONG_DELTA, "C")
+        lp = _choose_strike({k: v for k, v in puts.items()
+                             if _occ_meta(k)["strike"] < sp_k}, CONDOR_LONG_DELTA, "P")
+        if lc is None or lp is None:
+            continue
+        credit = round((_mid(calls[sc]) + _mid(puts[sp]))
+                       - (_mid(calls[lc]) + _mid(puts[lp])), 2)
+        if credit < MIN_CONDOR_CREDIT:
+            continue
+        call_w = _occ_meta(lc)["strike"] - sc_k
+        put_w = sp_k - _occ_meta(lp)["strike"]
+        max_loss_per = max(call_w, put_w) - credit
+        if max_loss_per <= 0:
+            continue
+        qty = _size_by_cap(equity, ctx.policy, max_loss_per, catalyst=False)
+        if qty < 1:
+            continue
+        out.append(TradeIntent(
+            underlying=u,
+            structure=Structure.VERTICAL_CREDIT,
+            legs=[
+                Leg(sc, Side.SELL, 1, PositionIntent.SELL_TO_OPEN),
+                Leg(lc, Side.BUY, 1, PositionIntent.BUY_TO_OPEN),
+                Leg(sp, Side.SELL, 1, PositionIntent.SELL_TO_OPEN),
+                Leg(lp, Side.BUY, 1, PositionIntent.BUY_TO_OPEN),
+            ],
+            qty=qty,
+            limit_price=-credit,           # net credit -> negative signed limit
+            thesis=(f"{u} range-day income: 0-{dte}DTE iron condor, shorts "
+                    f"~{CONDOR_SHORT_DELTA:.2f}d, credit {credit:.2f}, defined risk"),
+            max_loss_usd=round(max_loss_per * 100.0 * qty, 2),
+            catalyst_tag="",
+            is_0dte=(dte == 0),
+            expiry=expiry.isoformat(),
+            signal_snapshot={"regime": "range", "credit": credit,
+                             "call_width": call_w, "put_width": put_w},
+        ))
+    return out
 
 
 # --- playbook 0: high-conviction directional convexity -----------------------
@@ -483,6 +596,7 @@ def _spread_close_intent(
     else:
         net_value = long_touch - short_touch
 
+    is_credit = net_cost < -1e-6      # opened for a net credit (income sleeve)
     spread_plpc: float | None = None
     if net_value is not None and net_cost > 0:
         spread_plpc = (net_value - net_cost) / net_cost
@@ -491,10 +605,22 @@ def _spread_close_intent(
     reason = ""
     if all_cash:
         reason = "ALL_CASH: final-day flatten before submission deadline"
+    elif is_credit and net_value is not None:
+        # Credit spread: profit as the position decays toward zero. captured = how
+        # much of the credit we keep if we buy it back now; cost_to_close = -net_value.
+        credit_recv = -net_cost
+        cost_to_close = -net_value                     # >=0 when the spread still has value
+        captured = 1.0 - (cost_to_close / credit_recv) if credit_recv > 0 else 0.0
+        if captured >= INCOME_TAKE_FRAC:
+            reason = f"income target: captured {captured:+.0%} of credit"
+        elif cost_to_close >= INCOME_STOP_MULT * credit_recv:
+            reason = f"income stop: cost {cost_to_close:.2f} >= {INCOME_STOP_MULT:g}x credit"
+        elif is_0dte and _near_0dte_flatten(ctx.policy, now):
+            reason = f"0DTE flatten window before {_flat_0dte_str(ctx.policy)} ET"
     elif spread_plpc is not None and spread_plpc <= STOP_PLPC:
         reason = f"stop: spread {spread_plpc:+.0%} <= -50% of debit"
     elif spread_plpc is not None and spread_plpc >= TARGET_PLPC:
-        reason = f"target: spread {spread_plpc:+.0%} >= +100% of debit"
+        reason = f"target: spread {spread_plpc:+.0%} >= +150% of debit"
     elif is_0dte and _near_0dte_flatten(ctx.policy, now):
         reason = f"0DTE flatten window before {_flat_0dte_str(ctx.policy)} ET"
     if not reason:
@@ -706,6 +832,15 @@ def _option_positions(positions: list[dict] | None) -> Iterator[dict]:
         sym = str(p.get("symbol") or "")
         if p.get("asset_class") == "us_option" or _occ_meta(sym) is not None:
             yield p
+
+
+def _has_option_position(positions: list[dict] | None, underlying: str) -> bool:
+    """True if any open option position exists on this underlying root."""
+    for p in _option_positions(positions):
+        m = _occ_meta(str(p.get("symbol") or ""))
+        if m is not None and m["root"] == underlying and (_num(p.get("qty")) or 0.0) != 0:
+            return True
+    return False
 
 
 def _has_open_direction(positions: list[dict] | None, underlying: str, direction: int) -> bool:

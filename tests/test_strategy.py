@@ -123,6 +123,9 @@ def make_ctx(**over) -> Context:
         "contracts": {"SPY": _spy_contracts()},
         "now": datetime(2026, 9, 2, 10, 30, tzinfo=ET),
         "due_events": [],
+        # Default to TREND so the long-playbook tests exercise their path; the
+        # income/storm tests override regimes explicitly.
+        "regimes": {"SPY": "trend", "QQQ": "trend"},
     }
     kw.update(over)
     return Context(**kw)
@@ -264,6 +267,61 @@ def test_straddle_on_nfp_open_play() -> None:
     assert it.max_loss_usd <= 20_000.0 + 1e-6
     assert it.thesis
     assert it.signal_snapshot.get("catalyst") == "NFP_OPEN_PLAY"
+
+
+def test_income_condor_on_range_day() -> None:
+    from quaestor import regime as R
+    exp = "2026-09-02"
+    def s(root, e, t, k): return _occ(root, "260902", t, k)
+    lp, sp, sc, lc = s("SPY", exp, "P", 650), s("SPY", exp, "P", 655), \
+                     s("SPY", exp, "C", 665), s("SPY", exp, "C", 670)
+    chain = {
+        lp: _q(0.25, 0.35, -0.08), sp: _q(0.65, 0.75, -0.18),
+        sc: _q(0.65, 0.75, 0.18),  lc: _q(0.25, 0.35, 0.08),
+    }
+    contracts = [
+        {"symbol": lp, "expiration_date": exp, "strike_price": "650", "type": "put"},
+        {"symbol": sp, "expiration_date": exp, "strike_price": "655", "type": "put"},
+        {"symbol": sc, "expiration_date": exp, "strike_price": "665", "type": "call"},
+        {"symbol": lc, "expiration_date": exp, "strike_price": "670", "type": "call"},
+    ]
+    ctx = make_ctx(
+        now=datetime(2026, 9, 2, 10, 30, tzinfo=ET),
+        chains={"SPY": chain}, contracts={"SPY": contracts},
+        signals=_flat_signals(), regimes={"SPY": R.RANGE},
+    )
+    intents = decide(ctx)
+    condors = [i for i in intents if i.structure == Structure.VERTICAL_CREDIT]
+    assert len(condors) == 1
+    it = condors[0]
+    assert len(it.legs) == 4
+    assert it.limit_price < 0                       # net credit
+    assert it.max_loss_usd > 0
+    # shorts are the near strikes (655 put, 665 call), covered by the far wings
+    shorts = {l.symbol for l in it.legs if l.side == Side.SELL}
+    assert shorts == {sp, sc}
+    # payload builds (covered-short + coprime + <=4 legs)
+    from quaestor.orders import build_order_payload
+    payload = build_order_payload(it, attempt=0)
+    assert payload["order_class"] == "mleg" and len(payload["legs"]) == 4
+    assert float(payload["limit_price"]) < 0
+
+
+def test_range_suppresses_long_debits() -> None:
+    from quaestor import regime as R
+    # a strong bull signal on a RANGE day must NOT produce a long debit/convex bet
+    ctx = make_ctx(signals={**_flat_signals(), "SPY": _bull_spy_signal(strength=0.85)},
+                   regimes={"SPY": R.RANGE})
+    intents = decide(ctx)
+    assert all(i.structure != Structure.LONG_CALL for i in intents)
+    assert all(i.structure != Structure.VERTICAL_DEBIT for i in intents)
+
+
+def test_storm_stands_down() -> None:
+    from quaestor import regime as R
+    ctx = make_ctx(signals={**_flat_signals(), "SPY": _bull_spy_signal(strength=0.85)},
+                   regimes={"SPY": R.STORM})
+    assert decide(ctx) == []       # no new entries in a storm
 
 
 def test_conviction_directional_long_on_strong_signal() -> None:

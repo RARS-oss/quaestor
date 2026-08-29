@@ -361,6 +361,9 @@ def check_spread_quality(intent: TradeIntent, policy: dict, chain: dict[str, dic
     if intent.structure is Structure.CLOSE:
         return _skip_for_close(name)
     max_q = float(policy["per_trade"]["max_spread_quality"])
+    # A leg also passes when its ABSOLUTE spread is tiny — a penny/2-cent spread on
+    # a cheap far-OTM wing is fine to trade even though (ask-bid)/mid looks large.
+    max_abs = float(policy["per_trade"].get("max_abs_spread", 0.05))
     worst = 0.0
     for leg in intent.legs:
         snap = chain.get(leg.symbol)
@@ -370,9 +373,10 @@ def check_spread_quality(intent: TradeIntent, policy: dict, chain: dict[str, dic
         mid = _leg_mid(snap)
         if not isinstance(bid, (int, float)) or not isinstance(ask, (int, float)) or mid is None:
             return RiskCheck(name, False, f"unusable quote for leg {leg.symbol} (bid/ask/mid missing)")
-        quality = (float(ask) - float(bid)) / mid
+        abs_spread = float(ask) - float(bid)
+        quality = abs_spread / mid
         worst = max(worst, quality)
-        if quality > max_q + _EPS:
+        if quality > max_q + _EPS and abs_spread > max_abs + _EPS:
             return RiskCheck(
                 name, False,
                 f"leg {leg.symbol} spread quality {quality:.4f} > max {max_q:g} "

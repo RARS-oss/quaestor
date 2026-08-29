@@ -285,6 +285,12 @@ def main() -> int:
     agent.data = FakeData(mkt)
     agent.sealed_executor = None       # pure offline sim (execution path is the FakeBroker)
     agent.receipts = None
+    # Fresh, isolated state each run (don't load/save the real portfolio, and start
+    # with an empty fired-events set) so the simulation is reproducible.
+    import tempfile
+    from pathlib import Path as _Path
+    from quaestor.portfolio import PortfolioState
+    agent.portfolio = PortfolioState(_Path(tempfile.mkdtemp()) / "pf.json", agent.policy)
     # Drive the clock + market-open off the sim, and stub the network contract lookup.
     agent._now_et = lambda: mkt.now
     agent._market_open_now = lambda: dtime(9, 30) <= mkt.now.timetz().replace(tzinfo=None) < dtime(16, 0)

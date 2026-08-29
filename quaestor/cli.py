@@ -308,6 +308,80 @@ def cmd_replay(ref: str | None) -> int:
     return 0 if all_ok else 1
 
 
+def cmd_preflight() -> int:
+    """Go/no-go check before the live competition run: keys, paper gate, options
+    level, sealed toolchain, receipts writable, market clock. Prints a checklist
+    and exits non-zero if anything critical is not ready."""
+    from quaestor import clock
+    from quaestor.broker import Broker
+    from quaestor.config import load_calendar, load_policy, load_settings
+
+    ok = True
+
+    def check(label: str, passed: bool, detail: str = "", critical: bool = True) -> None:
+        nonlocal ok
+        if critical:
+            ok = ok and passed
+        mark = "PASS" if passed else ("FAIL" if critical else "warn")
+        print(f"  [{mark}] {label}" + (f" — {detail}" if detail else ""))
+
+    print("quaestor preflight — go/no-go for the live run\n" + "=" * 46)
+    try:
+        settings = load_settings()
+        check("config loads + paper gate", settings.paper,
+              f"trading_base={settings.trading_base}")
+        check("API keys present", bool(settings.api_key and settings.api_secret),
+              f"key={settings.api_key[:6]}…" if settings.api_key else "MISSING")
+    except SystemExit as exc:
+        check("config loads", False, f"load_settings refused: {exc}")
+        print("preflight: NO-GO (config)")
+        return 1
+
+    try:
+        acct = Broker(settings).account_snapshot()
+        check("account reachable + active", acct.equity > 0,
+              f"${acct.equity:,.0f} equity")
+        check("options level 3 (spreads)", acct.options_trading_level >= 3,
+              f"L{acct.options_trading_level}")
+        check("fresh $100k competition account", abs(acct.equity - 100_000) < 1e-6,
+              f"equity ${acct.equity:,.0f} — a fresh comp account starts at exactly $100,000",
+              critical=False)
+    except Exception as exc:
+        check("account reachable", False, repr(exc))
+
+    try:
+        load_policy(); load_calendar()
+        check("policy + calendar parse", True)
+    except Exception as exc:
+        check("policy + calendar parse", False, repr(exc))
+
+    try:
+        from quaestor.sealed_exec import SealedExecutor
+        se = SealedExecutor(settings, settings.receipts_dir)
+        check("sealed toolchain (bulla) available", se.available(),
+              "QUAESTOR_SEALED will place every order inside a signed cell")
+    except Exception as exc:
+        check("sealed toolchain available", False, repr(exc), critical=False)
+
+    try:
+        probe = settings.receipts_dir / ".preflight"
+        probe.write_text("ok", encoding="utf-8"); probe.unlink()
+        check("receipts dir writable", True, str(settings.receipts_dir))
+    except Exception as exc:
+        check("receipts dir writable", False, repr(exc))
+
+    try:
+        now = clock.now_et()
+        check("market clock", True,
+              f"now {now:%Y-%m-%d %H:%M} ET, open={clock.is_market_open_now()}", critical=False)
+    except Exception as exc:
+        check("market clock", False, repr(exc), critical=False)
+
+    print("=" * 46)
+    print("PREFLIGHT: " + ("GO ✓ — cleared for the live run" if ok else "NO-GO ✗ — fix the FAILs above"))
+    return 0 if ok else 1
+
+
 def cmd_rehearse(place_order: bool = False) -> int:
     """Dress rehearsal: exercise the full decision path against LIVE data without
     trading (data -> signals -> strategy -> risk -> order payloads). With
@@ -847,6 +921,7 @@ def _build_parser() -> argparse.ArgumentParser:
     rep = sub.add_parser("replay", help="re-derive sealed risk verdicts from signed inputs (determinism proof)")
     rep.add_argument("ref", nargs="?", default=None,
                      help="a cycle id or receipt path; default: every sealed cycle")
+    sub.add_parser("preflight", help="go/no-go readiness check before the live run")
     return parser
 
 
@@ -871,6 +946,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_rehearse(place_order=args.place_order)
         if args.command == "replay":
             return cmd_replay(args.ref)
+        if args.command == "preflight":
+            return cmd_preflight()
         if args.command == "flatten":
             return cmd_flatten()
     except KeyboardInterrupt:

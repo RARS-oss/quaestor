@@ -12,6 +12,9 @@ test:              ## full unit test suite (no network)
 status:            ## account + positions + today P&L
 	$(PY) -m quaestor status
 
+preflight:         ## go/no-go readiness check before the live run
+	$(PY) -m quaestor preflight
+
 rehearse:          ## dress rehearsal on live data — no trading
 	$(PY) -m quaestor rehearse
 

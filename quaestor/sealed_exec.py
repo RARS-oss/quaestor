@@ -91,6 +91,7 @@ class SealedExecutor:
             self._stage_cell(cell_local, cell_arg, spec)
         except Exception:
             return [], None
+        self._prune_cells(keep=48)  # a week of 5-min cycles must not accumulate unbounded
 
         argv = [
             BULLA, "run",
@@ -160,6 +161,19 @@ class SealedExecutor:
             return json.loads(out).get("results", [])
         except Exception:
             return []
+
+    def _prune_cells(self, keep: int = 48) -> None:
+        """Keep only the newest `keep` cell work dirs; the signed receipts are the
+        durable artifact, so old cells are disposable. Best-effort, WSL/posix path."""
+        if self._windows:
+            return
+        try:
+            root = Path(self._cell_arg("x")).parent
+            dirs = [d for d in root.iterdir() if d.is_dir()]
+            for d in sorted(dirs, key=lambda p: p.stat().st_mtime, reverse=True)[keep:]:
+                shutil.rmtree(d, ignore_errors=True)
+        except Exception:
+            pass
 
     def _posix(self, path: Path) -> str:
         return to_wsl_path(path) if self._windows else str(path)

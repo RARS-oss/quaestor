@@ -18,6 +18,9 @@ preflight:         ## go/no-go readiness check before the live run
 rehearse:          ## dress rehearsal on live data — no trading
 	$(PY) -m quaestor rehearse
 
+sim-day:           ## simulate a whole trading day in seconds (fake broker, offline)
+	$(PY) scripts/sim_day.py
+
 once:              ## one decision cycle (mints a signed receipt)
 	$(PY) -m quaestor once
 

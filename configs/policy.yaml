@@ -32,6 +32,10 @@ catalyst:
   # vol more readily; lower it to demand a bigger discount.
   im_rm_cheap: 0.85
   rm_floor_pct_frac: 0.008         # fallback realized daily move (0.8%) when no data
+  # Sell-side, single-stock earnings ONLY: harvest the IV crush by SELLING a defined-risk
+  # iron condor when implied move exceeds im_rm_rich x realized (vol genuinely overpriced).
+  # Sized to the income cap; wings bound the gap. Not applied to index/macro binaries.
+  im_rm_rich: 1.30
 structures:
   allowed: [long_call, long_put, vertical_debit, vertical_credit, straddle, close]
   defined_risk_only: true          # every short leg must be covered within the same order (mleg rule)

@@ -319,6 +319,81 @@ def test_avgo_earnings_is_not_traded_via_index_proxy() -> None:
     assert all(i.structure != Structure.STRADDLE for i in decide(ctx))
 
 
+AVGO_EXP = "260904"
+def _avgo(cp: str, k: int) -> str: return _occ("AVGO", AVGO_EXP, cp, k)
+
+
+def _avgo_earnings_chain() -> dict[str, dict]:
+    # spot ~300, earnings implied move ~+-5% (ATM straddle 15 -> IM 0.05). Shorts ~0.18d
+    # at +-15 (315/285), wings ~0.08d at +-22 (322/278). Rich credit (43% of width).
+    return {
+        _avgo("C", 300): _q(7.4, 7.6, 0.50), _avgo("P", 300): _q(7.4, 7.6, -0.50),
+        _avgo("C", 315): _q(2.9, 3.1, 0.18), _avgo("P", 285): _q(2.9, 3.1, -0.18),
+        _avgo("C", 322): _q(1.4, 1.6, 0.08), _avgo("P", 278): _q(1.4, 1.6, -0.08),
+    }
+
+
+def _avgo_earnings_contracts() -> list[dict]:
+    out = []
+    for k, cp in [(300, "call"), (300, "put"), (315, "call"), (285, "put"),
+                  (322, "call"), (278, "put")]:
+        sym = _avgo("C" if cp == "call" else "P", k)
+        out.append({"symbol": sym, "expiration_date": "2026-09-04",
+                    "strike_price": str(k), "type": cp})
+    return out
+
+
+def _avgo_ctx(**over):
+    kw = dict(
+        now=datetime(2026, 9, 3, 15, 35, tzinfo=ET),        # pre-close, before 15:45 cutoff
+        calendar={"week": [{"date": "2026-09-03", "events": [
+            {"time": "16:05", "tag": "AVGO_EARNINGS", "desc": "Broadcom AMC", "status": "inferred"}]}]},
+        chains={"AVGO": _avgo_earnings_chain()},
+        contracts={"AVGO": _avgo_earnings_contracts()},
+        realized_moves={"AVGO": 0.025, "SPY": 0.012, "QQQ": 0.012},
+        due_events=[],
+    )
+    kw.update(over)
+    return make_ctx(**kw)
+
+
+def test_avgo_earnings_iv_crush_harvest_fires_when_vol_rich() -> None:
+    """The opt-in sell-side: before AVGO's AMC report, with implied move (5%) well above
+    realized (2.5%) -> ratio 2.0 > 1.3 -> SELL a defined-risk iron condor to harvest the
+    IV crush. Next-day expiry (survives the report), net credit, sized to the income cap."""
+    from quaestor.strategy import earnings_underlyings_today
+    from datetime import date as _date
+    assert earnings_underlyings_today(
+        {"week": [{"date": "2026-09-03", "events": [{"tag": "AVGO_EARNINGS"}]}]},
+        _date(2026, 9, 3)) == {"AVGO"}
+
+    intents = decide(_avgo_ctx())
+    harvest = [i for i in intents if i.underlying == "AVGO"]
+    assert len(harvest) == 1
+    it = harvest[0]
+    assert it.structure == Structure.VERTICAL_CREDIT
+    assert it.catalyst_tag == "AVGO_EARNINGS"
+    assert it.limit_price < 0                            # net credit
+    assert it.expiry == "2026-09-04"                     # holds PAST the AMC report
+    assert it.is_0dte is False
+    assert len(it.legs) == 4
+    assert it.max_loss_usd <= 2_500.0 + 1e-6             # income-cap sized, gap bounded
+    assert it.signal_snapshot.get("harvest") is True
+    assert it.signal_snapshot.get("im_rm_ratio") == pytest.approx(2.0, abs=0.05)
+
+
+def test_avgo_harvest_silent_before_entry_window() -> None:
+    # same rich vol, but mid-morning -> too early to sell peak IV -> no harvest
+    intents = decide(_avgo_ctx(now=datetime(2026, 9, 3, 10, 30, tzinfo=ET)))
+    assert [i for i in intents if i.underlying == "AVGO"] == []
+
+
+def test_avgo_harvest_silent_when_vol_not_rich() -> None:
+    # realized move 5% == implied 5% -> ratio 1.0 <= 1.3 -> vol not rich -> don't sell
+    intents = decide(_avgo_ctx(realized_moves={"AVGO": 0.05, "SPY": 0.012, "QQQ": 0.012}))
+    assert [i for i in intents if i.underlying == "AVGO"] == []
+
+
 def test_catalyst_directional_lean_unaffected_by_im_rm_gate() -> None:
     """The gate guards ONLY the pure straddle. With a confirmed lean, the catalyst
     still fires as a directional long even when event vol is not cheap (small RM)."""

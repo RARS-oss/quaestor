@@ -106,6 +106,16 @@ FLATTEN_TAG: str = "ALL_CASH"
 # rather than overpay for vol that usually crushes.
 IM_RM_CHEAP: float = 0.85
 RM_FLOOR_PCT: float = 0.008      # fallback realized daily move when we have no data (0.8%)
+# Single-stock EARNINGS IV-crush harvest (the sell-side of the IM/RM rule, applied ONLY
+# where the overpricing is documented and defined-risk can bound the gap): before an AMC
+# report we SELL a defined-risk iron condor on the reporting name and let the post-report
+# IV crush pay us. Fires only in the pre-close window, only when vol is genuinely RICH
+# (implied move > IM_RM_RICH x realized), sized to the small income cap, wings cap the loss.
+EARNINGS_HARVEST: dict[str, str] = {"AVGO_EARNINGS": "AVGO"}   # calendar tag -> underlying
+# Enter in the afternoon (elevated pre-earnings IV) with margin before risk's 15:45
+# no-new-positions cutoff — so a live cycle actually lands the harvest before the close.
+EARNINGS_ENTRY_AFTER_MIN: int = 15 * 60          # 15:00 ET onward
+IM_RM_RICH: float = 1.30         # harvest only when implied move exceeds 1.3x realized
 # Which calendar tags fire the straddle playbook, and on which underlying.
 # Macro events that genuinely move the INDEX we trade -> straddle on that index.
 # Deliberately NO single-stock earnings here: AVGO_EARNINGS used to map to QQQ, but
@@ -169,7 +179,7 @@ def decide(ctx: Context) -> list[TradeIntent]:
     # new entries. Priority per underlying: catalyst > income > conviction > vertical.
     chosen: list[TradeIntent] = []
     seen: set[str] = set()
-    groups = (_catalyst_plays(ctx), _income_condors(ctx),
+    groups = (_catalyst_plays(ctx), _earnings_harvest(ctx), _income_condors(ctx),
               _conviction_directionals(ctx), _core_verticals(ctx))
     for group in groups:
         for it in group:
@@ -198,13 +208,79 @@ def decide(ctx: Context) -> list[TradeIntent]:
 
 # --- playbook 1b: income sleeve (range days only) — sell defined-risk premium --
 
-def _income_condors(ctx: Context) -> list[TradeIntent]:
-    """0-1DTE iron condor on a machine-classified RANGE day: sell ~0.18d call/put,
-    buy further-OTM wings for defined risk, net credit. This is the only source of
-    P&L in a quiet week — turns a theta-bleeding day into income. Exits at 55% of
-    credit / 2.2x stop / 0DTE curfew (handled in exit management)."""
-    out: list[TradeIntent] = []
+def _iron_condor_intent(ctx: Context, u: str, chain: dict[str, dict], expiry: date, *,
+                        catalyst_tag: str, thesis_label: str,
+                        snapshot_extra: dict[str, Any] | None = None) -> TradeIntent | None:
+    """Build ONE defined-risk iron condor on `u` at `expiry`: sell ~0.18d call+put, buy
+    ~0.08d wings, net credit, sized to the small income cap with a width-relative min
+    credit. Shared by the range-day income sleeve and the earnings IV-crush harvest so
+    both size and gate premium selling identically. Returns None if it doesn't qualify."""
     equity = float(ctx.account.equity)
+    dte = (expiry - _as_et(ctx.now).date()).days
+
+    def _sub(typ: str) -> dict[str, dict]:
+        return {occ: q for occ, q in chain.items()
+                if (m := _occ_meta(occ)) is not None and m["expiry"] == expiry
+                and m["type"] == typ and _mid(q) is not None}
+    calls, puts = _sub("C"), _sub("P")
+    sc = _choose_strike(calls, CONDOR_SHORT_DELTA, "C")
+    sp = _choose_strike(puts, CONDOR_SHORT_DELTA, "P")
+    if sc is None or sp is None:
+        return None
+    sc_k, sp_k = _occ_meta(sc)["strike"], _occ_meta(sp)["strike"]
+    lc = _choose_strike({k: v for k, v in calls.items()
+                         if _occ_meta(k)["strike"] > sc_k}, CONDOR_LONG_DELTA, "C")
+    lp = _choose_strike({k: v for k, v in puts.items()
+                         if _occ_meta(k)["strike"] < sp_k}, CONDOR_LONG_DELTA, "P")
+    if lc is None or lp is None:
+        return None
+    credit = round((_mid(calls[sc]) + _mid(puts[sp]))
+                   - (_mid(calls[lc]) + _mid(puts[lp])), 2)
+    call_w = _occ_meta(lc)["strike"] - sc_k
+    put_w = sp_k - _occ_meta(lp)["strike"]
+    width = max(call_w, put_w)
+    # mine #3: reject penny premium. Credit must clear BOTH an absolute floor and a
+    # fraction of the width, or the risk/reward is junk and we don't sell it.
+    min_credit = max(MIN_CONDOR_CREDIT, MIN_CONDOR_CREDIT_FRAC * width)
+    if credit < min_credit:
+        return None
+    max_loss_per = width - credit
+    if max_loss_per <= 0:
+        return None
+    # mine #1: premium selling must be SMALL. Size to the income cap (~2.5% of equity),
+    # NOT the 12% directional cap — one adverse move can't erase weeks of credit.
+    qty = _size_by_cap(equity, ctx.policy, max_loss_per, income=True)
+    if qty < 1:
+        return None
+    snap = {"credit": credit, "call_width": call_w, "put_width": put_w}
+    snap.update(snapshot_extra or {})
+    return TradeIntent(
+        underlying=u,
+        structure=Structure.VERTICAL_CREDIT,
+        legs=[
+            Leg(sc, Side.SELL, 1, PositionIntent.SELL_TO_OPEN),
+            Leg(lc, Side.BUY, 1, PositionIntent.BUY_TO_OPEN),
+            Leg(sp, Side.SELL, 1, PositionIntent.SELL_TO_OPEN),
+            Leg(lp, Side.BUY, 1, PositionIntent.BUY_TO_OPEN),
+        ],
+        qty=qty,
+        limit_price=-credit,               # net credit -> negative signed limit
+        thesis=(f"{thesis_label}: iron condor shorts ~{CONDOR_SHORT_DELTA:.2f}d, "
+                f"credit {credit:.2f}, defined risk (max loss {max_loss_per:.2f}/unit)"),
+        max_loss_usd=round(max_loss_per * 100.0 * qty, 2),
+        catalyst_tag=catalyst_tag,
+        is_0dte=(dte == 0),
+        expiry=expiry.isoformat(),
+        signal_snapshot=snap,
+    )
+
+
+def _income_condors(ctx: Context) -> list[TradeIntent]:
+    """0-1DTE iron condor on a machine-classified RANGE day: sell ~0.18d call/put, buy
+    further-OTM wings for defined risk, net credit. The only source of P&L in a quiet
+    week — turns a theta-bleeding day into income. Exits at 55% credit / 2.2x stop /
+    0DTE curfew (handled in exit management)."""
+    out: list[TradeIntent] = []
     for u in CORE_UNDERLYINGS:
         if (ctx.regimes or {}).get(u, regime_mod.UNKNOWN) != regime_mod.RANGE:
             continue
@@ -220,62 +296,82 @@ def _income_condors(ctx: Context) -> list[TradeIntent]:
         dte = (expiry - _as_et(ctx.now).date()).days
         if dte < 0 or dte > 1:
             continue
+        it = _iron_condor_intent(ctx, u, chain, expiry, catalyst_tag="",
+                                 thesis_label=f"{u} range-day income (0-{dte}DTE)",
+                                 snapshot_extra={"regime": "range"})
+        if it is not None:
+            out.append(it)
+    return out
 
-        def _sub(typ: str) -> dict[str, dict]:
-            return {occ: q for occ, q in chain.items()
-                    if (m := _occ_meta(occ)) is not None and m["expiry"] == expiry
-                    and m["type"] == typ and _mid(q) is not None}
-        calls, puts = _sub("C"), _sub("P")
-        sc = _choose_strike(calls, CONDOR_SHORT_DELTA, "C")
-        sp = _choose_strike(puts, CONDOR_SHORT_DELTA, "P")
-        if sc is None or sp is None:
+
+def _earnings_today(calendar: dict | None, tag: str, today: date) -> bool:
+    """True if `tag` is scheduled on `today` in the calendar."""
+    for day in (calendar or {}).get("week", []) or []:
+        raw = day.get("date")
+        try:
+            d = raw if isinstance(raw, date) else date.fromisoformat(str(raw))
+        except (ValueError, TypeError):
             continue
-        sc_k, sp_k = _occ_meta(sc)["strike"], _occ_meta(sp)["strike"]
-        lc = _choose_strike({k: v for k, v in calls.items()
-                             if _occ_meta(k)["strike"] > sc_k}, CONDOR_LONG_DELTA, "C")
-        lp = _choose_strike({k: v for k, v in puts.items()
-                             if _occ_meta(k)["strike"] < sp_k}, CONDOR_LONG_DELTA, "P")
-        if lc is None or lp is None:
+        if d != today:
             continue
-        credit = round((_mid(calls[sc]) + _mid(puts[sp]))
-                       - (_mid(calls[lc]) + _mid(puts[lp])), 2)
-        call_w = _occ_meta(lc)["strike"] - sc_k
-        put_w = sp_k - _occ_meta(lp)["strike"]
-        width = max(call_w, put_w)
-        # mine #3: reject penny premium. Credit must clear BOTH an absolute floor and
-        # a fraction of the width, or the risk/reward is junk and we don't sell it.
-        min_credit = max(MIN_CONDOR_CREDIT, MIN_CONDOR_CREDIT_FRAC * width)
-        if credit < min_credit:
+        for ev in day.get("events", []) or []:
+            if str(ev.get("tag", "")) == tag:
+                return True
+    return False
+
+
+def earnings_underlyings_today(calendar: dict | None, day: date) -> set[str]:
+    """Reporting names the agent must fetch data for today so the harvest can see their
+    chain + realized move. Called by agent.py to extend the data-fetch universe."""
+    return {u for tag, u in EARNINGS_HARVEST.items() if _earnings_today(calendar, tag, day)}
+
+
+def _earnings_harvest(ctx: Context) -> list[TradeIntent]:
+    """Single-stock earnings IV-crush harvest: before an AMC report, SELL a defined-risk
+    iron condor on the reporting name (e.g. AVGO) and let the post-report IV crush pay us.
+    Earnings implied vol is systematically overpriced; we collect it, and the wings cap the
+    loss even on a big gap. Fires ONLY (a) in the pre-close window on the earnings day,
+    (b) when vol is genuinely RICH (implied move > 1.3x realized — so we never sell cheap
+    vol), and (c) on a non-storm tape (decide()'s storm gate). Sized to the small income
+    cap: a bounded, opt-in bet, not a naked short."""
+    out: list[TradeIntent] = []
+    et = _as_et(ctx.now)
+    if et.hour * 60 + et.minute < EARNINGS_ENTRY_AFTER_MIN:
+        return out                                  # sell peak IV only near the close
+    today = et.date()
+    rich = float(((ctx.policy or {}).get("catalyst") or {}).get("im_rm_rich", IM_RM_RICH))
+    for tag, u in EARNINGS_HARVEST.items():
+        if not _earnings_today(ctx.calendar, tag, today):
             continue
-        max_loss_per = width - credit
-        if max_loss_per <= 0:
+        if _has_option_position(ctx.account.positions, u):
             continue
-        # mine #1: premium selling must be SMALL. Size to the income cap (~2.5% of
-        # equity), NOT the 12% directional cap — one range-break can't erase weeks of
-        # collected credit. This is the single most dangerous mine in the sleeve.
-        qty = _size_by_cap(equity, ctx.policy, max_loss_per, income=True)
-        if qty < 1:
+        chain = (ctx.chains or {}).get(u) or {}
+        contracts = (ctx.contracts or {}).get(u) or []
+        if not chain or not contracts:
             continue
-        out.append(TradeIntent(
-            underlying=u,
-            structure=Structure.VERTICAL_CREDIT,
-            legs=[
-                Leg(sc, Side.SELL, 1, PositionIntent.SELL_TO_OPEN),
-                Leg(lc, Side.BUY, 1, PositionIntent.BUY_TO_OPEN),
-                Leg(sp, Side.SELL, 1, PositionIntent.SELL_TO_OPEN),
-                Leg(lp, Side.BUY, 1, PositionIntent.BUY_TO_OPEN),
-            ],
-            qty=qty,
-            limit_price=-credit,           # net credit -> negative signed limit
-            thesis=(f"{u} range-day income: 0-{dte}DTE iron condor, shorts "
-                    f"~{CONDOR_SHORT_DELTA:.2f}d, credit {credit:.2f}, defined risk"),
-            max_loss_usd=round(max_loss_per * 100.0 * qty, 2),
-            catalyst_tag="",
-            is_0dte=(dte == 0),
-            expiry=expiry.isoformat(),
-            signal_snapshot={"regime": "range", "credit": credit,
-                             "call_width": call_w, "put_width": put_w},
-        ))
+        expiry = _choose_expiry(contracts, 1, ctx.now)     # nearest ~1DTE...
+        if expiry is None or (expiry - today).days < 1:
+            continue                                # ...must survive PAST the AMC report
+        pair = _atm_pair(chain, expiry)
+        if pair is None:
+            continue
+        call_sym, _put_sym, call_q, put_q = pair
+        cm, pm = _mid(call_q), _mid(put_q)
+        meta = _occ_meta(call_sym)
+        spot_ref = meta["strike"] if meta else None
+        if cm is None or pm is None or not spot_ref:
+            continue
+        im = (cm + pm) / spot_ref                   # ATM straddle / spot ~ implied move
+        rm = _num((ctx.realized_moves or {}).get(u))
+        if rm is None or rm <= 0 or im <= rich * rm:
+            continue                                # only harvest genuinely RICH vol
+        it = _iron_condor_intent(
+            ctx, u, chain, expiry, catalyst_tag=tag,
+            thesis_label=f"{u} {tag} IV-crush harvest (IM {im:.3f} > {rich:g}x RM {rm:.3f})",
+            snapshot_extra={"harvest": True, "implied_move": round(im, 5),
+                            "realized_move": round(rm, 5), "im_rm_ratio": round(im / rm, 3)})
+        if it is not None:
+            out.append(it)
     return out
 
 

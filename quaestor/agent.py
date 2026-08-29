@@ -419,8 +419,16 @@ class Agent:
         # -- step 3: market data ----------------------------------------------
         core = list(dict.fromkeys(universe_mod.UNDERLYINGS))
         today = now.date()
+        # On an earnings day, add the reporting name(s) to the data universe so the
+        # IV-crush harvest can see their chain + realized move (they are not core).
+        try:
+            earn_unders = strategy_mod.earnings_underlyings_today(self.calendar, today)
+        except Exception as exc:
+            earn_unders = set()
+            notes.append(f"earnings_underlyings_today failed: {exc!r}")
+        data_unders = list(dict.fromkeys(list(core) + sorted(earn_unders)))
         default_lte = today + timedelta(days=_ENTRY_DTE_WINDOW_DAYS)
-        expiry_lte_by_root: dict[str, date] = {u: default_lte for u in core}
+        expiry_lte_by_root: dict[str, date] = {u: default_lte for u in data_unders}
         opt_positions = self._option_positions(account)
         for pos in opt_positions:
             try:
@@ -440,11 +448,11 @@ class Agent:
         snapshots: dict[str, dict] = {}
         bars: dict[str, list[dict]] = {}
         try:
-            snapshots = self.data.stock_snapshot(core)
+            snapshots = self.data.stock_snapshot(data_unders)
         except Exception as exc:
             notes.append(f"data.stock_snapshot failed: {exc!r}")
         try:
-            bars = self.data.stock_bars(core)
+            bars = self.data.stock_bars(data_unders)
         except Exception as exc:
             notes.append(f"data.stock_bars failed: {exc!r}")
 
@@ -488,7 +496,7 @@ class Agent:
         # Classify the day's regime per underlying (trend/range/storm) — gates the
         # income sleeve (range only) vs the long-convexity playbooks (trend).
         regimes: dict[str, str] = {}
-        for u in core:
+        for u in data_unders:
             ubars = bars.get(u, []) or []
             spot = 0.0
             for b in reversed(ubars):
@@ -516,7 +524,7 @@ class Agent:
         # session (so building vol counts), and fall back to a floor when we have no data.
         realized_moves: dict[str, float] = {}
         rm_floor = float(((self.policy or {}).get("catalyst") or {}).get("rm_floor_pct_frac", 0.008))
-        for u in core:
+        for u in data_unders:
             cands: list[float] = []
             snap = (snapshots or {}).get(u) or {}
             pdb = snap.get("prev_daily_bar") or {}

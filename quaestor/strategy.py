@@ -5,17 +5,22 @@ option chains and open positions and proposes fully-specified TradeIntents.
 It NEVER talks to the network; risk.judge() gates every intent afterwards and
 broker.execute() does the marketable-limit dance.
 
-Playbooks (each returns [] when its conditions are not met):
-1. Core momentum debit vertical (SPY/QQQ): signal.strength >= 0.6 and
-   direction != 0 -> buy ~0.45-delta / sell ~0.25-delta, same expiry (0-3 DTE),
-   qty sized so max_loss ~= policy per-trade cap. Skipped when a position is
-   already open on that underlying+direction.
-2. Catalyst straddle (tag from ctx.due_events, e.g. NFP_OPEN_PLAY): long ATM
-   0DTE straddle (BUY call + BUY put, same strike/expiry, ratio 1:1), sized to
-   the catalyst cap, catalyst_tag set; exits handled by flatten rules.
+Playbooks — an AGGRESSIVE CONVEX BARBELL, all defined-risk long premium so the
+worst case is always the premium paid (the aggregate-risk gate in risk.judge
+hard-bounds the whole book):
+0. High-conviction directional long (strength >= 0.78, non-opposing sentiment):
+   a single near-the-money 0-1 DTE call/put — convex upside, sized to the
+   conviction cap. The bet that makes iks.
+1. Catalyst play (tag from ctx.due_events, e.g. NFP_OPEN_PLAY): DIRECTIONAL long
+   when a lean is confirmed (higher-EV than paying for both sides), else a long
+   ATM 0DTE straddle. Sized to the catalyst cap.
+2. Core momentum debit vertical (SPY/QQQ, medium conviction >= 0.55): buy
+   ~0.45-delta / sell ~0.25-delta, 0-3 DTE, sized to the per-trade cap.
 3. Exit management: CLOSE intents when unrealized <= -50% of debit (stop),
-   >= +100% (target), 0DTE near policy flat_0dte_by_et, or the ALL_CASH event
-   is due (final day -> close everything, no new entries).
+   >= +150% (let convex winners run), 0DTE near policy flat_0dte_by_et, or the
+   ALL_CASH event is due (final day -> close everything, no new entries).
+decide() picks at most ONE fresh entry per underlying per cycle, priority
+catalyst > conviction > vertical.
 
 Max-loss math (per spec): debit vertical -> debit*100*qty; credit vertical ->
 (width-credit)*100*qty; straddle/single -> debit*100*qty.
@@ -61,14 +66,17 @@ ET = ZoneInfo("America/New_York")
 
 # --- playbook constants ------------------------------------------------------
 CORE_UNDERLYINGS: tuple[str, ...] = ("SPY", "QQQ")
-MIN_VERTICAL_STRENGTH: float = 0.6
+MIN_VERTICAL_STRENGTH: float = 0.55       # medium conviction -> defined-risk vertical
+CONVICTION_STRENGTH: float = 0.78         # high conviction -> a convex directional LONG
+CATALYST_LEAN_STRENGTH: float = 0.45      # a lean this strong turns a catalyst directional
 VERTICAL_LONG_DELTA: float = 0.45
 VERTICAL_SHORT_DELTA: float = 0.25
+CONVICTION_DELTA: float = 0.45            # directional long strike (near-the-money convexity)
 VERTICAL_TARGET_DTE: int = 1
 VERTICAL_MAX_DTE: int = 3
 ATM_DELTA: float = 0.50
 STOP_PLPC: float = -0.5          # close at -50% of debit
-TARGET_PLPC: float = 1.0         # close at +100% of debit
+TARGET_PLPC: float = 1.5         # let convex winners run further (+150% of debit)
 FLAT_0DTE_LEAD_MIN: int = 10     # start flattening 0DTE this many min before deadline
 FLATTEN_TAG: str = "ALL_CASH"
 # Which calendar tags fire the straddle playbook, and on which underlying.
@@ -104,15 +112,51 @@ class Context:
 
 
 def decide(ctx: Context) -> list[TradeIntent]:
-    """Run all playbooks. Exit intents first; ALL_CASH suppresses new entries."""
+    """Run all playbooks. Exit intents first; ALL_CASH suppresses new entries.
+
+    Entry priority per underlying (aggressive convex barbell): a catalyst play
+    beats a high-conviction directional long, which beats the medium-conviction
+    defined-risk vertical. At most one NEW entry per underlying per cycle — the
+    aggregate-risk gate in risk.judge bounds the whole book's worst case."""
     intents: list[TradeIntent] = []
     all_cash = any(str(ev.get("tag") or "") == FLATTEN_TAG for ev in ctx.due_events or [])
     intents.extend(_exit_intents(ctx, all_cash))
     if all_cash:
         return intents
-    intents.extend(_catalyst_straddles(ctx))
-    intents.extend(_core_verticals(ctx))
+
+    chosen: list[TradeIntent] = []
+    seen: set[str] = set()
+    for group in (_catalyst_plays(ctx), _conviction_directionals(ctx), _core_verticals(ctx)):
+        for it in group:
+            if it.underlying in seen:      # one fresh entry per underlying per cycle
+                continue
+            chosen.append(it)
+            seen.add(it.underlying)
+    intents.extend(chosen)
     return intents
+
+
+# --- playbook 0: high-conviction directional convexity -----------------------
+
+def _conviction_directionals(ctx: Context) -> list[TradeIntent]:
+    """The convex upside bet: on the STRONGEST momentum, buy a directional long
+    option (near-the-money 0-1 DTE) instead of a capped spread — max loss is the
+    premium, upside is convex. Sized to the conviction (catalyst) cap."""
+    out: list[TradeIntent] = []
+    for underlying in CORE_UNDERLYINGS:
+        sig = (ctx.signals or {}).get(underlying)
+        if sig is None or sig.direction == 0 or sig.strength < CONVICTION_STRENGTH:
+            continue
+        sent = (ctx.sentiment or {}).get(underlying)
+        if sent is not None and (sent * sig.direction) < -0.3:   # sentiment strongly disagrees
+            continue
+        if _has_open_direction(ctx.account.positions, underlying, sig.direction):
+            continue
+        intent = _directional_long(ctx, underlying, sig.direction, tag="CONVICTION",
+                                   note=f"high-conviction momentum (strength {sig.strength:.2f})")
+        if intent is not None:
+            out.append(intent)
+    return out
 
 
 # --- playbook 1: core momentum debit vertical --------------------------------
@@ -200,9 +244,67 @@ def _core_verticals(ctx: Context) -> list[TradeIntent]:
     return out
 
 
-# --- playbook 2: catalyst straddle -------------------------------------------
+# --- directional long (shared convex builder) --------------------------------
 
-def _catalyst_straddles(ctx: Context) -> list[TradeIntent]:
+def _directional_long(ctx: Context, underlying: str, direction: int, *, tag: str,
+                      note: str, dte: int = VERTICAL_TARGET_DTE) -> TradeIntent | None:
+    """A single-leg near-the-money long call/put — defined risk (max loss = debit),
+    convex upside. Sized to the conviction (catalyst) cap."""
+    equity = float(ctx.account.equity)
+    chain = (ctx.chains or {}).get(underlying) or {}
+    contracts = (ctx.contracts or {}).get(underlying) or []
+    if not chain or not contracts:
+        return None
+    expiry = _choose_expiry(contracts, dte, ctx.now)
+    if expiry is None:
+        return None
+    real_dte = (expiry - _as_et(ctx.now).date()).days
+    if real_dte < 0 or real_dte > VERTICAL_MAX_DTE:
+        return None
+    opt_type = "C" if direction > 0 else "P"
+    sub = {
+        occ: q for occ, q in chain.items()
+        if (m := _occ_meta(occ)) is not None
+        and m["expiry"] == expiry and m["type"] == opt_type and _mid(q) is not None
+    }
+    sym = _choose_strike(sub, CONVICTION_DELTA, opt_type)
+    if sym is None:
+        return None
+    mid = _mid(sub[sym])
+    if mid is None or mid <= 0:
+        return None
+    limit = round(mid, 2)
+    qty = _size_by_cap(equity, ctx.policy, limit, catalyst=True)
+    if qty < 1:
+        return None
+    word = "call" if opt_type == "C" else "put"
+    snapshot: dict[str, Any] = {"direction": float(direction), "tag": tag, "note": note}
+    sig = (ctx.signals or {}).get(underlying)
+    if sig is not None:
+        snapshot.update(sig.features)
+        snapshot["strength"] = float(sig.strength)
+    sent = (ctx.sentiment or {}).get(underlying)
+    if sent is not None:
+        snapshot["sentiment"] = float(sent)
+    return TradeIntent(
+        underlying=underlying,
+        structure=Structure.LONG_CALL if opt_type == "C" else Structure.LONG_PUT,
+        legs=[Leg(sym, Side.BUY, 1, PositionIntent.BUY_TO_OPEN)],
+        qty=qty,
+        limit_price=limit,
+        thesis=f"{underlying} {tag}: long ~{CONVICTION_DELTA:.2f}d {word} "
+               f"exp {expiry.isoformat()} — {note}",
+        max_loss_usd=round(limit * 100.0 * qty, 2),
+        catalyst_tag=tag,
+        is_0dte=(real_dte == 0),
+        expiry=expiry.isoformat(),
+        signal_snapshot=snapshot,
+    )
+
+
+# --- playbook 2: catalyst play (directional when confirmed, else straddle) ----
+
+def _catalyst_plays(ctx: Context) -> list[TradeIntent]:
     out: list[TradeIntent] = []
     equity = float(ctx.account.equity)
     played: set[str] = set()
@@ -213,6 +315,19 @@ def _catalyst_straddles(ctx: Context) -> list[TradeIntent]:
             continue
         if _has_open_straddle(ctx.account.positions, underlying):
             continue
+        # Directional when we have a confirmed lean (signal + non-opposing sentiment):
+        # a directional long is higher-EV than paying for both sides of a straddle.
+        sig = (ctx.signals or {}).get(underlying)
+        sent = (ctx.sentiment or {}).get(underlying)
+        if (sig is not None and sig.direction != 0 and sig.strength >= CATALYST_LEAN_STRENGTH
+                and not (sent is not None and (sent * sig.direction) < -0.2)):
+            lean = _directional_long(
+                ctx, underlying, sig.direction, tag=tag,
+                note=f"{tag} directional lean (strength {sig.strength:.2f})", dte=0)
+            if lean is not None:
+                out.append(lean)
+                played.add(underlying)
+                continue
         chain = (ctx.chains or {}).get(underlying) or {}
         contracts = (ctx.contracts or {}).get(underlying) or []
         if not chain or not contracts:

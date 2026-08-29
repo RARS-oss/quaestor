@@ -47,7 +47,7 @@ NOW = datetime(2026, 9, 1, 10, 30, tzinfo=ET)
 
 EXPECTED_CHECK_ORDER = [
     "paper_gate", "structure_allowed", "defined_risk", "per_trade_cap",
-    "daily_halt", "weekly_halt", "concurrency", "concentration",
+    "aggregate_risk", "daily_halt", "weekly_halt", "concurrency", "concentration",
     "spread_quality", "open_interest", "leg_price_min", "timing",
     "sane_limit_price", "qty_positive", "mleg_rules",
 ]
@@ -323,13 +323,24 @@ def test_defined_risk_rejects_uncovered_ratio_spread(policy, account):
 # --------------------------------------------------------------------------- #
 
 def test_per_trade_cap_default_pass_and_fail(policy, account):
-    # default cap: 10% of 100k = $10,000
-    ok = run_judge(make_vertical(max_loss_usd=9_800.0), policy, account)
+    # default cap: 12% of 100k = $12,000
+    ok = run_judge(make_vertical(max_loss_usd=11_500.0), policy, account)
     assert get_check(ok, "per_trade_cap").ok
 
-    bad = run_judge(make_vertical(max_loss_usd=10_500.0), policy, account)
+    bad = run_judge(make_vertical(max_loss_usd=13_000.0), policy, account)
     assert not bad.approved
     assert not get_check(bad, "per_trade_cap").ok
+
+
+def test_aggregate_risk_budget_caps_the_book(policy, account):
+    # 55% of 100k = $55,000 total premium-at-risk budget.
+    over = run_judge(make_vertical(max_loss_usd=6_000.0, catalyst_tag="NFP"), policy, account,
+                     state=fresh_state(open_risk_usd=50_000.0))
+    assert not over.approved
+    assert not get_check(over, "aggregate_risk").ok
+    ok = run_judge(make_vertical(max_loss_usd=4_000.0, catalyst_tag="NFP"), policy, account,
+                   state=fresh_state(open_risk_usd=50_000.0))
+    assert get_check(ok, "aggregate_risk").ok
 
 
 def test_per_trade_cap_catalyst_allows_larger_size(policy, account):
@@ -355,7 +366,7 @@ def test_per_trade_cap_catalyst_allows_larger_size(policy, account):
 
 def test_daily_halt_blocks_at_threshold(policy, account):
     verdict = run_judge(make_vertical(), policy, account,
-                        state=fresh_state(day_pnl_pct=-15.0))
+                        state=fresh_state(day_pnl_pct=-18.0))
     assert not verdict.approved
     assert not get_check(verdict, "daily_halt").ok
 
@@ -393,7 +404,7 @@ def test_concurrency_pass_and_fail(policy, account):
     assert get_check(ok, "concurrency").ok
 
     full = run_judge(make_vertical(), policy, account,
-                     state=fresh_state(open_position_count=3))
+                     state=fresh_state(open_position_count=5))
     assert not full.approved
     assert not get_check(full, "concurrency").ok
 
@@ -407,24 +418,24 @@ def test_concentration_pass_and_fail_named_underlying(policy, account):
     # * ratio * 100 * qty — matching how portfolio.underlying_exposure measures
     # held legs), NOT net premium: for make_vertical() that is $600, not $210.
     ok = run_judge(make_vertical(), policy, account,
-                   state=fresh_state(underlying_exposure={"SPY": 59_000.0}))
+                   state=fresh_state(underlying_exposure={"SPY": 69_000.0}))
     assert get_check(ok, "concentration").ok
 
     bad = run_judge(make_vertical(), policy, account,
-                    state=fresh_state(underlying_exposure={"SPY": 59_900.0}))
+                    state=fresh_state(underlying_exposure={"SPY": 69_900.0}))
     assert not bad.approved
     assert not get_check(bad, "concentration").ok
 
 
 def test_concentration_default_cap_for_unlisted_underlying(policy, account):
-    # default cap 40% = $40,000 for a root without an explicit cap
+    # default cap 45% = $45,000 for a root without an explicit cap
     intent = make_vertical(underlying="IWM")
-    state = fresh_state(underlying_exposure={"IWM": 39_900.0})
+    state = fresh_state(underlying_exposure={"IWM": 44_900.0})
     check = risk.check_concentration(intent, policy, account, state)
     assert not check.ok
 
     check_ok = risk.check_concentration(
-        intent, policy, account, fresh_state(underlying_exposure={"IWM": 39_700.0})
+        intent, policy, account, fresh_state(underlying_exposure={"IWM": 44_300.0})
     )
     assert check_ok.ok
 

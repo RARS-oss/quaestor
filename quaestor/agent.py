@@ -237,6 +237,9 @@ class Agent:
             "day_pnl_pct": float(grab("day_pnl_pct", 0.0) or 0.0),
             "week_pnl_pct": float(grab("week_pnl_pct", 0.0) or 0.0),
             "open_position_count": strategy_count,
+            "open_risk_usd": sum(
+                mv for p in opt_positions
+                if (mv := float(p.get("market_value") or 0.0)) > 0),
             "fired_events": sorted(str(t) for t in self._fired_events()),
             "open_option_positions": opt_positions,
             "open_positions_count": len(opt_positions),  # legacy: raw leg-row count

@@ -1,17 +1,21 @@
 # quaestor risk policy v1 — this file is hashed (sha256) into every RiskVerdict and bulla receipt.
 # Changing it changes policy_digest -> visible in the audit trail. Never bypass in code.
 version: 1
+# AGGRESSIVE CONVEX BARBELL: push upside hard, but the aggregate premium-at-risk
+# budget + defined-risk-only + daily/weekly halts make blowing up impossible by
+# construction — the worst case is bounded to the deployed premium.
 account:
-  daily_loss_halt_pct: 15          # stop opening new positions for the day at -15% equity vs day open
-  weekly_loss_halt_pct: 30         # hard stop for the rest of the contest
-  max_concurrent_positions: 3
+  daily_loss_halt_pct: 18          # stop opening new positions for the day at -18% vs day open
+  weekly_loss_halt_pct: 30         # hard stop for the rest of the contest (the floor)
+  max_open_risk_pct: 55            # "cannot blow up" gate: total open premium-at-risk <= 55% equity
+  max_concurrent_positions: 5      # more shots on goal (was 3)
   max_underlying_concentration_pct:
-    default: 40
-    SPY: 60
-    QQQ: 60
+    default: 45
+    SPY: 70
+    QQQ: 70
 per_trade:
-  max_loss_pct_default: 10         # of current equity, worst-case defined risk
-  max_loss_pct_catalyst: 20        # catalyst_tag != "" allows bigger conviction shots
+  max_loss_pct_default: 12         # of current equity, worst-case defined risk
+  max_loss_pct_catalyst: 22        # catalyst/conviction shots (the convex bets)
   min_open_interest: 100
   max_spread_quality: 0.03         # (ask - bid) / mid must be <= 3% on every leg
   min_leg_price: 0.05              # avoid sub-nickel junk contracts

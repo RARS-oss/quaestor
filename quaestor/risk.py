@@ -233,6 +233,33 @@ def check_per_trade_cap(intent: TradeIntent, policy: dict, account: AccountSnaps
     )
 
 
+def check_aggregate_risk(intent: TradeIntent, policy: dict, account: AccountSnapshot,
+                         portfolio_state: dict) -> RiskCheck:
+    """The 'cannot blow up' gate: total premium-at-risk (already-deployed +
+    this intent's worst-case loss) must stay under account.max_open_risk_pct of
+    equity. Since every position is defined-risk long premium, this hard-bounds
+    the worst possible loss of the whole book — so we can push convexity
+    aggressively without ever being able to zero the account."""
+    name = "aggregate_risk"
+    if intent.structure is Structure.CLOSE:
+        return _skip_for_close(name)
+    acct = policy.get("account", {})
+    cap_pct = float(acct.get("max_open_risk_pct", 55))
+    cap_usd = account.equity * cap_pct / 100.0
+    deployed = float(portfolio_state.get("open_risk_usd", 0.0))
+    projected = deployed + intent.max_loss_usd
+    if projected > cap_usd + _EPS:
+        return RiskCheck(
+            name, False,
+            f"open premium-at-risk ${projected:.2f} (${deployed:.2f} live + "
+            f"${intent.max_loss_usd:.2f} new) exceeds budget ${cap_usd:.2f} ({cap_pct:g}% of equity)",
+        )
+    return RiskCheck(
+        name, True,
+        f"premium-at-risk ${projected:.2f} within budget ${cap_usd:.2f} ({cap_pct:g}%)",
+    )
+
+
 def check_daily_halt(intent: TradeIntent, policy: dict, portfolio_state: dict) -> RiskCheck:
     """No NEW positions once day P&L is at/below -daily_loss_halt_pct or the
     halted flag is latched. Closes stay allowed — de-risking is never blocked."""
@@ -556,6 +583,7 @@ def judge(
         check_structure_allowed(intent, policy),
         check_defined_risk(intent, policy),
         check_per_trade_cap(intent, policy, account),
+        check_aggregate_risk(intent, policy, account, portfolio_state),
         check_daily_halt(intent, policy, portfolio_state),
         check_weekly_halt(intent, policy, portfolio_state),
         check_concurrency(intent, policy, portfolio_state),

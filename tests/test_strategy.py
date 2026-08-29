@@ -74,7 +74,7 @@ def _flat_signals() -> dict[str, Signal]:
     }
 
 
-def _bull_spy_signal(strength: float = 0.8) -> Signal:
+def _bull_spy_signal(strength: float = 0.65) -> Signal:
     return Signal("SPY", 1, strength, {"ret_5m": 0.002, "ret_30m": 0.004, "vwap_dev": 0.0015,
                                        "range_pos": 0.9, "rv_30m": 0.12, "score": 0.85})
 
@@ -264,6 +264,43 @@ def test_straddle_on_nfp_open_play() -> None:
     assert it.max_loss_usd <= 20_000.0 + 1e-6
     assert it.thesis
     assert it.signal_snapshot.get("catalyst") == "NFP_OPEN_PLAY"
+
+
+def test_conviction_directional_long_on_strong_signal() -> None:
+    # strength >= 0.78 -> a convex directional LONG (single leg), not a vertical
+    ctx = make_ctx(signals={**_flat_signals(), "SPY": _bull_spy_signal(strength=0.85)})
+    intents = decide(ctx)
+    assert len(intents) == 1
+    it = intents[0]
+    assert it.structure == Structure.LONG_CALL
+    assert it.underlying == "SPY"
+    assert len(it.legs) == 1
+    assert it.legs[0].side == Side.BUY
+    assert it.legs[0].position_intent == PositionIntent.BUY_TO_OPEN
+    assert it.catalyst_tag == "CONVICTION"     # gets the bigger conviction cap
+    assert it.limit_price > 0                  # a debit (long premium)
+    assert it.max_loss_usd == pytest.approx(it.limit_price * 100 * it.qty)
+
+
+def test_catalyst_goes_directional_when_lean_confirmed() -> None:
+    now = datetime(2026, 9, 4, 9, 31, tzinfo=ET)
+    ctx = make_ctx(
+        now=now,
+        chains={"SPY": _nfp_chain()},
+        contracts={"SPY": [
+            {"symbol": NFP_C650, "expiration_date": "2026-09-04", "strike_price": "650", "type": "call"},
+            {"symbol": NFP_P650, "expiration_date": "2026-09-04", "strike_price": "650", "type": "put"},
+        ]},
+        signals={**_flat_signals(), "SPY": _bull_spy_signal(strength=0.6)},  # a confirmed lean
+        due_events=[{"time": "09:30", "tag": "NFP_OPEN_PLAY", "desc": "post-NFP", "status": "confirmed"}],
+    )
+    intents = decide(ctx)
+    assert len(intents) == 1
+    it = intents[0]
+    assert it.structure == Structure.LONG_CALL   # directional, not a straddle
+    assert it.catalyst_tag == "NFP_OPEN_PLAY"
+    assert it.is_0dte is True
+    assert len(it.legs) == 1
 
 
 def test_no_straddle_without_due_event() -> None:

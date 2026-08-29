@@ -157,6 +157,18 @@ class PortfolioState:
                 keys.add((sym, ""))
         return len(keys)
 
+    def open_risk_usd(self, account: AccountSnapshot) -> float:
+        """Premium still at risk across open LONG option positions (a conservative
+        proxy for the book's worst-case remaining loss — feeds the aggregate-risk
+        gate). Long legs carry positive market_value; short legs (covered within a
+        defined-risk spread) are ignored, so this OVERstates risk => fail-safe."""
+        total = 0.0
+        for pos in self.option_positions(account):
+            mv = _num(pos.get("market_value"))
+            if mv > 0:  # long premium still exposed
+                total += mv
+        return total
+
     def to_state_dict(self) -> dict[str, Any]:
         """Exactly the portfolio_state shape risk.judge() consumes."""
         account = self._last_account
@@ -166,6 +178,7 @@ class PortfolioState:
             "day_pnl_pct": self.day_pnl_pct,
             "open_position_count": self.strategy_position_count(account) if account else 0,
             "underlying_exposure": self.underlying_exposure(account) if account else {},
+            "open_risk_usd": self.open_risk_usd(account) if account else 0.0,
             "week_pnl_pct": self.week_pnl_pct,
         }
 

@@ -1,7 +1,10 @@
 # Live-run runbook — the competition trading week
 
-The market opens **Mon Sep 1... actually the contest week is Aug 31 – Sep 4**;
-regular session **09:30–16:00 ET** (16:30–23:00 in Cyprus / UTC+3). This is the
+Trading days in the contest window: **Fri Aug 28** (kickoff, already passed),
+then after the closed weekend **Mon Aug 31, Tue Sep 1, Wed Sep 2, Thu Sep 3, and
+Fri Sep 4** (half day — submission deadline 11:00 ET). Regular session
+**09:30–16:00 ET** (16:30–23:00 in Cyprus / UTC+3). Start the fresh competition
+account at **Monday Aug 31's open** to capture the most P&L history. This is the
 step-by-step for running quaestor live under seal, unattended, all week.
 
 > One rule above all: **paper only.** `load_settings()` fail-closes if the base
@@ -37,7 +40,7 @@ step-by-step for running quaestor live under seal, unattended, all week.
    python -m quaestor rehearse   # expect: ALL GREEN (data + order path live)
    ```
 
-## T-0: Monday at (or just before) 09:30 ET
+## T-0: Monday Aug 31 at (or just before) 09:30 ET
 
 6. **Start the sealed loop** in a terminal that will stay up all week:
    ```bash

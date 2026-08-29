@@ -88,11 +88,16 @@ def atm_iv(chain: dict[str, dict], spot: float) -> float | None:
     return best[1] if best else None
 
 
-def classify(bars: list[dict], chain: dict[str, dict], spot: float) -> str:
-    """Label the day for one underlying. Conservative: UNKNOWN until enough tape."""
+def diagnostics(bars: list[dict], chain: dict[str, dict], spot: float) -> dict[str, Any]:
+    """Same computation as classify(), but returns the features alongside the label
+    so callers can log WHY a regime was chosen — not just the verdict. This is how
+    we watch the classifier on a live day (mine #2: never trust it blind): every
+    cycle records net_move / vwap_dev / rvol / iv next to the label it produced."""
     closes = [c for b in bars if (c := _num(b.get("c"))) is not None]
     if len(closes) < MIN_BARS or spot <= 0:
-        return UNKNOWN
+        return {"label": UNKNOWN, "bars": len(closes), "net_move": None,
+                "vwap_dev": None, "rvol": None, "iv": None, "exp_move": None,
+                "reason": "insufficient tape" if len(closes) < MIN_BARS else "no spot"}
 
     open_px = closes[0]
     last = closes[-1]
@@ -119,15 +124,25 @@ def classify(bars: list[dict], chain: dict[str, dict], spot: float) -> str:
 
     # STORM: violent tape or a big IV print -> stand down.
     if rvol >= STORM_RVOL or (iv is not None and iv >= STORM_ATM_IV):
-        return STORM
+        label, reason = STORM, f"rvol {rvol:.4f}>={STORM_RVOL} or iv {iv}>={STORM_ATM_IV}"
     # TREND: a real directional day (net move + one-sided vs VWAP) -> buy premium.
-    if abs(net_move) >= TREND_NET_MOVE and abs(vwap_dev) >= TREND_VWAP_DEV \
+    elif abs(net_move) >= TREND_NET_MOVE and abs(vwap_dev) >= TREND_VWAP_DEV \
             and (net_move >= 0) == (vwap_dev >= 0):
-        return TREND
+        label, reason = TREND, f"net {net_move:+.4f} & vwap_dev {vwap_dev:+.4f} one-sided"
     # RANGE: contained, near VWAP -> sell premium.
-    if abs(net_move) < RANGE_NET_MOVE and abs(vwap_dev) < RANGE_VWAP_DEV:
-        return RANGE
-    return UNKNOWN
+    elif abs(net_move) < RANGE_NET_MOVE and abs(vwap_dev) < RANGE_VWAP_DEV:
+        label, reason = RANGE, f"net {net_move:+.4f} & vwap_dev {vwap_dev:+.4f} contained"
+    else:
+        label, reason = UNKNOWN, f"net {net_move:+.4f} / vwap_dev {vwap_dev:+.4f} in no bucket"
+
+    return {"label": label, "bars": len(closes), "net_move": net_move,
+            "vwap_dev": vwap_dev, "rvol": rvol, "iv": iv,
+            "exp_move": expected_move_pct(chain, spot), "reason": reason}
+
+
+def classify(bars: list[dict], chain: dict[str, dict], spot: float) -> str:
+    """Label the day for one underlying. Conservative: UNKNOWN until enough tape."""
+    return diagnostics(bars, chain, spot)["label"]
 
 
 # -- tiny OCC helpers (self-contained; no import cycle with strategy) ----------

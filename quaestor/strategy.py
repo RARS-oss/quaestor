@@ -88,7 +88,11 @@ TARGET_PLPC: float = 1.5         # let convex winners run further (+150% of debi
 # Income sleeve (range days): sell defined-risk premium, take 55%, stop 2.2x credit.
 CONDOR_SHORT_DELTA: float = 0.18     # short strikes ~1x expected move
 CONDOR_LONG_DELTA: float = 0.08      # protection wings further OTM
-MIN_CONDOR_CREDIT: float = 0.15      # skip when premium is too thin to be worth it (VIX ~14)
+MIN_CONDOR_CREDIT: float = 0.15      # absolute floor: skip sub-15c junk (VIX ~14)
+MIN_CONDOR_CREDIT_FRAC: float = 0.20  # AND credit must be >= 20% of the wing width.
+#   Penny premium is the quiet-week trap (mine #3): a $5-wide condor for $0.20 risks
+#   $4.80 to make $0.20. The width-relative floor rejects that — a $5 condor now needs
+#   >= $1.00 credit (risk $4 for $1, ~25% on risk) or we don't sell it at all.
 INCOME_TAKE_FRAC: float = 0.55       # buy back once 55% of the credit is captured
 INCOME_STOP_MULT: float = 2.2        # stop when it costs 2.2x the credit to close
 FLAT_0DTE_LEAD_MIN: int = 10     # start flattening 0DTE this many min before deadline
@@ -216,14 +220,21 @@ def _income_condors(ctx: Context) -> list[TradeIntent]:
             continue
         credit = round((_mid(calls[sc]) + _mid(puts[sp]))
                        - (_mid(calls[lc]) + _mid(puts[lp])), 2)
-        if credit < MIN_CONDOR_CREDIT:
-            continue
         call_w = _occ_meta(lc)["strike"] - sc_k
         put_w = sp_k - _occ_meta(lp)["strike"]
-        max_loss_per = max(call_w, put_w) - credit
+        width = max(call_w, put_w)
+        # mine #3: reject penny premium. Credit must clear BOTH an absolute floor and
+        # a fraction of the width, or the risk/reward is junk and we don't sell it.
+        min_credit = max(MIN_CONDOR_CREDIT, MIN_CONDOR_CREDIT_FRAC * width)
+        if credit < min_credit:
+            continue
+        max_loss_per = width - credit
         if max_loss_per <= 0:
             continue
-        qty = _size_by_cap(equity, ctx.policy, max_loss_per, catalyst=False)
+        # mine #1: premium selling must be SMALL. Size to the income cap (~2.5% of
+        # equity), NOT the 12% directional cap — one range-break can't erase weeks of
+        # collected credit. This is the single most dangerous mine in the sleeve.
+        qty = _size_by_cap(equity, ctx.policy, max_loss_per, income=True)
         if qty < 1:
             continue
         out.append(TradeIntent(
@@ -929,13 +940,23 @@ def _find_quote(chains: dict[str, dict[str, dict]], sym: str, root: str) -> dict
     return {}
 
 
-def _size_by_cap(equity: float, policy: dict, unit_debit: float, *, catalyst: bool) -> int:
-    """Contracts (strategy units) so that unit_debit*100*qty <= per-trade cap."""
+def _size_by_cap(equity: float, policy: dict, unit_debit: float, *,
+                 catalyst: bool = False, income: bool = False) -> int:
+    """Contracts (strategy units) so that unit_debit*100*qty <= per-trade cap.
+
+    Three caps: income (premium selling, small — ~2.5%), catalyst (convex bets,
+    large — ~22%), default (directional verticals — ~12%). income wins if set:
+    selling insurance big is how a premium book blows up on one bad day."""
     per_trade = (policy or {}).get("per_trade") or {}
-    key = "max_loss_pct_catalyst" if catalyst else "max_loss_pct_default"
+    if income:
+        key, fallback = "max_loss_pct_income", 2.5
+    elif catalyst:
+        key, fallback = "max_loss_pct_catalyst", 20.0
+    else:
+        key, fallback = "max_loss_pct_default", 10.0
     pct = _num(per_trade.get(key))
     if pct is None:
-        pct = 20.0 if catalyst else 10.0
+        pct = fallback
     cap_usd = equity * pct / 100.0
     per_unit = unit_debit * 100.0
     if per_unit <= 0:

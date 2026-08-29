@@ -44,3 +44,21 @@ def test_expected_move_from_atm_straddle() -> None:
     em = R.expected_move_pct(chain, 660.0)
     assert em is not None
     assert abs(em - (6.0 / 660.0)) < 1e-6
+
+
+def test_diagnostics_agrees_with_classify_and_exposes_features() -> None:
+    # mine #2: diagnostics() must return the SAME label as classify() plus the
+    # features behind it, so a live cycle can log WHY (not just the verdict).
+    trend = _bars([660.0 + i * 0.6 for i in range(12)])
+    d = R.diagnostics(trend, {}, trend[-1]["c"])
+    assert d["label"] == R.classify(trend, {}, trend[-1]["c"]) == R.TREND
+    assert d["net_move"] is not None and d["net_move"] > 0
+    assert d["vwap_dev"] is not None
+    assert d["rvol"] is not None
+    assert d["reason"]                      # human-readable why-string for the log
+
+    # the UNKNOWN early-tape case still carries a reason and null features
+    thin = R.diagnostics(_bars([660.0, 661.0]), {}, 661.0)
+    assert thin["label"] == R.UNKNOWN
+    assert thin["net_move"] is None
+    assert "tape" in thin["reason"]

@@ -38,18 +38,47 @@ def _occ(root: str, exp: date, typ: str, strike: float) -> str:
     return f"{root}{exp:%y%m%d}{typ}{int(round(strike * 1000)):08d}"
 
 
+_SIM_IV = 0.20
+
+
+def _dte_days(exp: date, now: datetime) -> float:
+    """Days-to-expiry INCLUDING the fraction of the current trading day still left,
+    so options decay intraday (theta). A 0DTE contract runs 1.0 -> 0.0 across the
+    session; without this the toy chain had constant intraday dte and a range-day
+    straddle fabricated profit because it never bled. This is what makes the range
+    day honestly show income-only, near-flat."""
+    d = max(0, (exp - now.date()).days)
+    t = now.timetz().replace(tzinfo=None)
+    cur = t.hour * 60 + t.minute
+    frac_remaining = max(0.0, min(1.0, (16 * 60 - cur) / (16 * 60 - (9 * 60 + 30))))
+    # One session is worth ~0.3 "day" of extrinsic, so a 0DTE opens at dte~0.3
+    # (straddle ~$3.6, matching a real low-vol 0DTE) and decays to 0 by the close.
+    return d + 0.3 * frac_remaining
+
+
+def _sigma(spot: float, dte: float) -> float:
+    """One expected-move-in-dollars used for BOTH delta and time value, so the toy
+    chain is internally consistent (a steep near-dated delta curve AND matching
+    premium). ~1 std-dev move over the option's life; floored so 0DTE stays sane.
+    Consistency is what makes the income condor realistic: with the old mismatched
+    widths the 0.18d/0.08d strikes were ~12pts apart, so condors were absurdly wide
+    and collected ~4% of width (junk). Tied to one sigma they sit ~5-7pts apart and
+    collect ~25-35% of width, like a real SPY iron condor."""
+    return max(1.0, spot * _SIM_IV * math.sqrt(max(dte, 0.15) / 252.0))
+
+
 def _opt_mid(spot: float, strike: float, typ: str, dte: float) -> float:
-    """Crude but monotonic option mid: intrinsic + a Gaussian time-value bump."""
+    """Intrinsic + Black-Scholes-ish ATM extrinsic (0.4*sigma) shaped by a Gaussian."""
     intrinsic = max(0.0, spot - strike) if typ == "C" else max(0.0, strike - spot)
-    width = max(1.0, 0.012 * spot)
-    tv = (0.011 * spot + 0.0016 * spot * math.sqrt(max(dte, 0.02))) \
-        * math.exp(-0.5 * ((strike - spot) / width) ** 2)
+    sigma = _sigma(spot, dte)
+    tv = 0.40 * sigma * math.exp(-0.5 * ((strike - spot) / sigma) ** 2)
     return round(max(0.05, intrinsic + tv), 2)
 
 
-def _opt_delta(spot: float, strike: float, typ: str) -> float:
-    width = max(1.0, 0.02 * spot)
-    call_d = 1.0 / (1.0 + math.exp(-(spot - strike) / width))   # logistic ~ N(d1)
+def _opt_delta(spot: float, strike: float, typ: str, dte: float = 1.0) -> float:
+    sigma = _sigma(spot, dte)
+    # 1.7/sigma makes the logistic approximate the normal CDF of moneyness.
+    call_d = 1.0 / (1.0 + math.exp(-1.7 * (spot - strike) / sigma))
     d = call_d if typ == "C" else call_d - 1.0
     return round(d, 3)
 
@@ -60,7 +89,7 @@ def _synth(root: str, spot: float, now: datetime, expiries: list[date]) -> tuple
     contracts: list[dict] = []
     lo, hi = int(spot * 0.94), int(spot * 1.06)
     for exp in expiries:
-        dte = max(0.0, (exp - now.date()).days + 0.3)
+        dte = _dte_days(exp, now)
         for k in range(lo, hi + 1):
             for typ in ("C", "P"):
                 sym = _occ(root, exp, typ, k)
@@ -68,8 +97,8 @@ def _synth(root: str, spot: float, now: datetime, expiries: list[date]) -> tuple
                 spread = max(0.02, round(mid * 0.02, 2))
                 chain[sym] = {
                     "bid": round(mid - spread / 2, 2), "ask": round(mid + spread / 2, 2),
-                    "mid": mid, "last": mid, "iv": 0.2,
-                    "delta": _opt_delta(spot, k, typ), "gamma": 0.01, "theta": -0.05,
+                    "mid": mid, "last": mid, "iv": _SIM_IV,
+                    "delta": _opt_delta(spot, k, typ, dte), "gamma": 0.01, "theta": -0.05,
                     "vega": 0.1, "oi": 5000, "t": now.isoformat(),
                 }
                 contracts.append({
@@ -279,11 +308,20 @@ def _range_path(base: float) -> list[float]:
     return [round(base + 0.6 * math.sin(i * 0.7), 2) for i in range(79)]
 
 
+def _storm_path(base: float) -> list[float]:
+    """A violent whipsaw — per-5min swings ~1.5-2% so realized vol clears STORM_RVOL
+    and the agent must STAND DOWN (no premium bought, no premium sold)."""
+    return [round(base * (1.0 + 0.018 * math.sin(i * 1.7) + 0.006 * math.sin(i * 0.4)), 2)
+            for i in range(79)]
+
+
 def main() -> int:
     mode = sys.argv[2] if len(sys.argv) > 2 else "trend"
     start = datetime.combine(SIM_DATE, dtime(9, 30), tzinfo=ET)
     if mode == "range":
         spy, qqq = _range_path(660.0), _range_path(585.0)
+    elif mode == "storm":
+        spy, qqq = _storm_path(660.0), _storm_path(585.0)
     else:
         spy, qqq = _spy_path(), _qqq_path()
     mkt = DayMarket(now=start, spots={"SPY": spy[0], "QQQ": qqq[0]},
@@ -316,6 +354,8 @@ def main() -> int:
     print("=" * 66)
     peak_equity = 100_000.0
     trough_equity = 100_000.0
+    running_peak = 100_000.0
+    max_dd = 0.0                       # true peak-to-later-trough drawdown (<= 0)
     cycles = 0
     for step in range(79):
         agent.run_cycle()
@@ -323,6 +363,8 @@ def main() -> int:
         eq = agent.broker.account_snapshot().equity
         peak_equity = max(peak_equity, eq)
         trough_equity = min(trough_equity, eq)
+        running_peak = max(running_peak, eq)
+        max_dd = min(max_dd, eq / running_peak - 1.0)   # decline from the prior high
         mkt.advance()
 
     clock_mod.is_market_open_now = orig_open
@@ -339,8 +381,7 @@ def main() -> int:
     print(f"   final equity         : ${final.equity:,.2f}  ({(final.equity/100_000-1)*100:+.2f}%)")
     print(f"   intraday peak/trough : ${peak_equity:,.0f} / ${trough_equity:,.0f}")
     print(f"   open positions at EOD: {len(final.positions)}")
-    max_dd = (trough_equity / peak_equity - 1) * 100 if peak_equity else 0.0
-    print(f"   max drawdown         : {max_dd:.2f}%")
+    print(f"   max drawdown         : {max_dd * 100:.2f}%   (true peak-to-trough)")
 
     ok = True
     if not fb.trade_log:

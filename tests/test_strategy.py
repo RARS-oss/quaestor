@@ -275,9 +275,11 @@ def test_income_condor_on_range_day() -> None:
     def s(root, e, t, k): return _occ(root, "260902", t, k)
     lp, sp, sc, lc = s("SPY", exp, "P", 650), s("SPY", exp, "P", 655), \
                      s("SPY", exp, "C", 665), s("SPY", exp, "C", 670)
+    # A realistic, sellable condor: credit 1.40 on $5 wings (28% of width) clears the
+    # width-relative floor (mine #3). Shorts ~0.90 mid, wings ~0.20 mid.
     chain = {
-        lp: _q(0.25, 0.35, -0.08), sp: _q(0.65, 0.75, -0.18),
-        sc: _q(0.65, 0.75, 0.18),  lc: _q(0.25, 0.35, 0.08),
+        lp: _q(0.15, 0.25, -0.08), sp: _q(0.85, 0.95, -0.18),
+        sc: _q(0.85, 0.95, 0.18),  lc: _q(0.15, 0.25, 0.08),
     }
     contracts = [
         {"symbol": lp, "expiration_date": exp, "strike_price": "650", "type": "put"},
@@ -297,6 +299,11 @@ def test_income_condor_on_range_day() -> None:
     assert len(it.legs) == 4
     assert it.limit_price < 0                       # net credit
     assert it.max_loss_usd > 0
+    # mine #1: premium selling is sized SMALL — worst-case loss stays within the
+    # 2.5% income cap ($2,500 on $100k), NOT the 12% directional cap. A 12%-sized
+    # condor here would risk ~$12k; the income cap holds it to a few contracts.
+    assert it.max_loss_usd <= 2_500.0 + 1e-6
+    assert it.qty <= 7                              # small and frequent, not a turnover bet
     # shorts are the near strikes (655 put, 665 call), covered by the far wings
     shorts = {l.symbol for l in it.legs if l.side == Side.SELL}
     assert shorts == {sp, sc}
@@ -322,6 +329,33 @@ def test_storm_stands_down() -> None:
     ctx = make_ctx(signals={**_flat_signals(), "SPY": _bull_spy_signal(strength=0.85)},
                    regimes={"SPY": R.STORM})
     assert decide(ctx) == []       # no new entries in a storm
+
+
+def test_penny_premium_condor_rejected() -> None:
+    """mine #3: a $5-wide condor collecting only $0.50 (10% of width) is junk R/R —
+    the width-relative min-credit floor must reject it rather than sell mush."""
+    from quaestor import regime as R
+    exp = "2026-09-02"
+    def s(t, k): return _occ("SPY", "260902", t, k)
+    lp, sp, sc, lc = s("P", 650), s("P", 655), s("C", 665), s("C", 670)
+    # shorts ~0.40, wings ~0.15 -> credit 0.50 on $5 wings = 10% of width (< 20% floor)
+    chain = {
+        lp: _q(0.10, 0.20, -0.08), sp: _q(0.35, 0.45, -0.18),
+        sc: _q(0.35, 0.45, 0.18),  lc: _q(0.10, 0.20, 0.08),
+    }
+    contracts = [
+        {"symbol": lp, "expiration_date": exp, "strike_price": "650", "type": "put"},
+        {"symbol": sp, "expiration_date": exp, "strike_price": "655", "type": "put"},
+        {"symbol": sc, "expiration_date": exp, "strike_price": "665", "type": "call"},
+        {"symbol": lc, "expiration_date": exp, "strike_price": "670", "type": "call"},
+    ]
+    ctx = make_ctx(
+        now=datetime(2026, 9, 2, 10, 30, tzinfo=ET),
+        chains={"SPY": chain}, contracts={"SPY": contracts},
+        signals=_flat_signals(), regimes={"SPY": R.RANGE},
+    )
+    condors = [i for i in decide(ctx) if i.structure == Structure.VERTICAL_CREDIT]
+    assert condors == []            # too thin to sell
 
 
 def test_conviction_directional_long_on_strong_signal() -> None:

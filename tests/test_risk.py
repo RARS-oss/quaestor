@@ -360,6 +360,22 @@ def test_per_trade_cap_catalyst_allows_larger_size(policy, account):
     assert not get_check(huge, "per_trade_cap").ok
 
 
+def test_per_trade_cap_income_sizes_credit_structures_small(policy, account):
+    """mine #1 backstop: premium-selling (credit) structures are held to the small
+    income cap (2.5% = $2,500), NOT the 12% directional cap. An oversized condor that
+    would slip under the default cap must still be rejected — one range-break can't be
+    allowed to erase weeks of collected credit."""
+    # $3,000 max-loss: under the 12% default cap ($12k) but over the 2.5% income cap.
+    over = run_judge(make_credit_vertical(max_loss_usd=3_000.0), policy, account)
+    assert not over.approved
+    cap = get_check(over, "per_trade_cap")
+    assert not cap.ok
+    assert "income" in cap.detail
+    # a small condor within 2.5% passes the cap
+    ok = run_judge(make_credit_vertical(max_loss_usd=2_000.0), policy, account)
+    assert get_check(ok, "per_trade_cap").ok
+
+
 # --------------------------------------------------------------------------- #
 # daily_halt / weekly_halt
 # --------------------------------------------------------------------------- #

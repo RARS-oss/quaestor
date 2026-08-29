@@ -214,7 +214,13 @@ def check_per_trade_cap(intent: TradeIntent, policy: dict, account: AccountSnaps
     if intent.structure is Structure.CLOSE:
         return _skip_for_close(name)
     pt = policy["per_trade"]
-    if intent.catalyst_tag:
+    if intent.structure in _CREDIT_STRUCTURES:
+        # Premium selling is sized small regardless of any catalyst tag — this is the
+        # independent backstop for mine #1 (an oversized income condor is the sleeve's
+        # deadliest failure). Default 2.5% if the policy predates the income cap.
+        cap_pct = float(pt.get("max_loss_pct_income", 2.5))
+        which = "income"
+    elif intent.catalyst_tag:
         cap_pct = float(pt["max_loss_pct_catalyst"])
         which = f"catalyst {intent.catalyst_tag!r}"
     else:

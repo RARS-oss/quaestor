@@ -160,6 +160,7 @@ class CycleRecord:
     intents: list[dict[str, Any]] = field(default_factory=list)       # TradeIntent.to_dict()
     verdicts: list[dict[str, Any]] = field(default_factory=list)      # RiskVerdict.to_dict()
     executions: list[dict[str, Any]] = field(default_factory=list)    # ExecutionReport.to_dict()
+    regimes: dict[str, Any] = field(default_factory=dict)             # {underlying: diagnostics()}
     receipt_path: str = ""
     notes: list[str] = field(default_factory=list)
 

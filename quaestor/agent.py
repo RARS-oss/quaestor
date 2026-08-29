@@ -497,9 +497,18 @@ class Agent:
                     spot = float(c)
                     break
             try:
-                regimes[u] = regime_mod.classify(ubars, chains.get(u, {}), spot)
-            except Exception:
+                diag = regime_mod.diagnostics(ubars, chains.get(u, {}), spot)
+                regimes[u] = diag["label"]
+                # Record WHY (mine #2: never trust the classifier blind). The features
+                # land in the cycle record + receipt so Monday we watch the live reads,
+                # not just the verdict, and can spot a mislabel before it costs us.
+                rec.regimes[u] = diag
+                notes.append(
+                    f"regime {u}={diag['label']} ({diag.get('reason','')}; "
+                    f"bars={diag['bars']})")
+            except Exception as exc:
                 regimes[u] = regime_mod.UNKNOWN
+                notes.append(f"regime.classify({u}) failed: {exc!r}")
 
         intents: list[TradeIntent] = []
         try:
@@ -584,6 +593,7 @@ class Agent:
                 "intents": rec.intents,
                 "verdicts": rec.verdicts,
                 "zk_proofs": zk_proofs,
+                "regimes": rec.regimes,
                 "inputs": {
                     "account": rec.account.to_dict() if rec.account else None,
                     "market_open": market_open,

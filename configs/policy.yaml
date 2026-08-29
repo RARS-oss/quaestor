@@ -16,6 +16,10 @@ account:
 per_trade:
   max_loss_pct_default: 12         # of current equity, worst-case defined risk
   max_loss_pct_catalyst: 22        # catalyst/conviction shots (the convex bets)
+  max_loss_pct_income: 2.5         # PREMIUM SELLING is sized SMALL: an income condor
+                                   # risks <=2.5% equity so one range-break can't erase
+                                   # weeks of collected credit. Enforced in strategy
+                                   # sizing AND re-checked in risk.check_per_trade_cap.
   min_open_interest: 100
   max_spread_quality: 0.03         # (ask - bid) / mid <= 3% per leg, OR...
   max_abs_spread: 0.05             # ...an absolute spread <= $0.05 (penny wings pass)

@@ -97,6 +97,15 @@ INCOME_TAKE_FRAC: float = 0.55       # buy back once 55% of the credit is captur
 INCOME_STOP_MULT: float = 2.2        # stop when it costs 2.2x the credit to close
 FLAT_0DTE_LEAD_MIN: int = 10     # start flattening 0DTE this many min before deadline
 FLATTEN_TAG: str = "ALL_CASH"
+# IM/RM gate on the long catalyst STRADDLE: only pay for both sides of event vol when
+# it is genuinely cheap vs realized. IM = straddle price / spot (the move the chain is
+# pricing); RM = recent realized daily move. Buy iff IM < IM_RM_CHEAP * RM. Otherwise
+# the straddle just bleeds theta (the quiet-day trap). This guards ONLY the straddle —
+# a directional catalyst lean is a separate edge and is unaffected. On a true binary
+# (NFP) IM is justly high, so this correctly makes us take a directional shot or sit,
+# rather than overpay for vol that usually crushes.
+IM_RM_CHEAP: float = 0.85
+RM_FLOOR_PCT: float = 0.008      # fallback realized daily move when we have no data (0.8%)
 # Which calendar tags fire the straddle playbook, and on which underlying.
 STRADDLE_PLAYS: dict[str, str] = {
     "NFP_OPEN_PLAY": "SPY",
@@ -128,6 +137,7 @@ class Context:
     now: datetime
     due_events: list[dict]
     regimes: dict[str, str] = field(default_factory=dict)   # underlying -> trend/range/storm
+    realized_moves: dict[str, float] = field(default_factory=dict)  # underlying -> realized daily move (frac)
 
 
 def decide(ctx: Context) -> list[TradeIntent]:
@@ -468,6 +478,20 @@ def _catalyst_plays(ctx: Context) -> list[TradeIntent]:
         limit = round(call_mid + put_mid, 2)
         if limit <= 0:
             continue
+        # IM/RM gate: don't overpay for event vol on the pure long straddle. IM is the
+        # straddle's priced move (its price over spot ~ the ATM strike); RM is the recent
+        # realized daily move. If vol is not clearly cheap, standing aside beats bleeding
+        # theta on a quiet day. (Directional leans above are unaffected.)
+        cat_pol = (ctx.policy or {}).get("catalyst") or {}
+        cheap = float(cat_pol.get("im_rm_cheap", IM_RM_CHEAP))
+        rm = _num((ctx.realized_moves or {}).get(underlying))
+        if rm is None or rm <= 0:
+            rm = float(cat_pol.get("rm_floor_pct_frac", RM_FLOOR_PCT))
+        atm_meta = _occ_meta(call_sym)
+        spot_ref = atm_meta["strike"] if atm_meta else None
+        im = (limit / spot_ref) if spot_ref else None
+        if im is not None and im >= cheap * rm:
+            continue                          # event vol not cheap -> no long straddle
         qty = _size_by_cap(equity, ctx.policy, limit, catalyst=True)
         if qty < 1:
             continue
@@ -478,6 +502,9 @@ def _catalyst_plays(ctx: Context) -> list[TradeIntent]:
             "event_desc": str(ev.get("desc") or ""),
             "call_mid": call_mid,
             "put_mid": put_mid,
+            "implied_move": round(im, 5) if im is not None else None,
+            "realized_move": round(rm, 5),
+            "im_rm_ratio": round(im / rm, 3) if (im is not None and rm) else None,
         })
         cd, pd = _num(call_q.get("delta")), _num(put_q.get("delta"))
         if cd is not None:

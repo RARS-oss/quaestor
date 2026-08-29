@@ -141,7 +141,20 @@ class FakeData:
         self.mkt = mkt
 
     def stock_snapshot(self, symbols: list[str]) -> dict[str, dict]:
-        return {u: {"price": self.mkt.spots.get(u, 0.0)} for u in symbols}
+        out: dict[str, dict] = {}
+        for u in symbols:
+            price = self.mkt.spots.get(u, 0.0)
+            # A prior-day bar whose range mirrors this path's character, so the catalyst
+            # IM/RM gate has a realistic realized-move benchmark: a quiet range day yields
+            # a small prior range (straddle looks rich -> skipped), a trend/storm day a
+            # large one (straddle looks cheap -> bought).
+            series = self.mkt.path.get(u) or [price]
+            base = series[0] or price or 1.0
+            rng = (max(series) - min(series)) if series else 0.0
+            half = rng / 2.0
+            out[u] = {"price": price,
+                      "prev_daily_bar": {"h": base + half, "l": base - half, "c": base}}
+        return out
 
     def stock_bars(self, symbols, timeframe: str = "5Min", lookback_minutes: int = 390):
         # Emit the last ~30 steps of the path as rising/f alling bars so signals fire.

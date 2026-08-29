@@ -24,6 +24,14 @@ per_trade:
   max_spread_quality: 0.03         # (ask - bid) / mid <= 3% per leg, OR...
   max_abs_spread: 0.05             # ...an absolute spread <= $0.05 (penny wings pass)
   min_leg_price: 0.05              # avoid sub-nickel junk contracts
+catalyst:
+  # IM/RM gate on the long event straddle: buy both sides of event vol ONLY when it is
+  # cheap vs realized (implied move < im_rm_cheap x realized daily move). Otherwise a
+  # catalyst straddle just bleeds theta on a quiet day. A directional catalyst lean is a
+  # separate edge and is NOT gated here. Raise im_rm_cheap toward/above 1.0 to buy event
+  # vol more readily; lower it to demand a bigger discount.
+  im_rm_cheap: 0.85
+  rm_floor_pct_frac: 0.008         # fallback realized daily move (0.8%) when no data
 structures:
   allowed: [long_call, long_put, vertical_debit, vertical_credit, straddle, close]
   defined_risk_only: true          # every short leg must be covered within the same order (mleg rule)

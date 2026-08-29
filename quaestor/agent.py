@@ -510,6 +510,28 @@ class Agent:
                 regimes[u] = regime_mod.UNKNOWN
                 notes.append(f"regime.classify({u}) failed: {exc!r}")
 
+        # Realized daily move per underlying — the RM benchmark for the catalyst IM/RM
+        # gate (don't overpay for event vol). Prefer the prior day's true range (stable,
+        # available at the open), take the max with intraday realized vol scaled to a
+        # session (so building vol counts), and fall back to a floor when we have no data.
+        realized_moves: dict[str, float] = {}
+        rm_floor = float(((self.policy or {}).get("catalyst") or {}).get("rm_floor_pct_frac", 0.008))
+        for u in core:
+            cands: list[float] = []
+            snap = (snapshots or {}).get(u) or {}
+            pdb = snap.get("prev_daily_bar") or {}
+            hi, lo, cl = pdb.get("h"), pdb.get("l"), pdb.get("c")
+            try:
+                if hi and lo and cl and float(cl) > 0:
+                    cands.append((float(hi) - float(lo)) / float(cl))
+            except (TypeError, ValueError):
+                pass
+            diag = rec.regimes.get(u) or {}
+            rvol = diag.get("rvol")
+            if isinstance(rvol, (int, float)) and rvol > 0:
+                cands.append(float(rvol) * (78.0 ** 0.5))   # ~78 five-min bars per session
+            realized_moves[u] = max(cands) if cands else rm_floor
+
         intents: list[TradeIntent] = []
         try:
             ctx = strategy_mod.Context(
@@ -525,6 +547,7 @@ class Agent:
                 now=now,
                 due_events=due_events,
                 regimes=regimes,
+                realized_moves=realized_moves,
             )
             intents = list(strategy_mod.decide(ctx))
             events_consumed = True  # strategy actually saw due_events — safe to mark fired

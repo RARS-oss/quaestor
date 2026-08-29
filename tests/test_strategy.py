@@ -126,6 +126,9 @@ def make_ctx(**over) -> Context:
         # Default to TREND so the long-playbook tests exercise their path; the
         # income/storm tests override regimes explicitly.
         "regimes": {"SPY": "trend", "QQQ": "trend"},
+        # A ~1.2% typical daily move so the catalyst IM/RM gate lets a normally-priced
+        # straddle through; the quiet-day test overrides this to a small value.
+        "realized_moves": {"SPY": 0.012, "QQQ": 0.012},
     }
     kw.update(over)
     return Context(**kw)
@@ -267,6 +270,52 @@ def test_straddle_on_nfp_open_play() -> None:
     assert it.max_loss_usd <= 20_000.0 + 1e-6
     assert it.thesis
     assert it.signal_snapshot.get("catalyst") == "NFP_OPEN_PLAY"
+    # IM/RM was recorded for the audit trail (straddle price 2.90 / spot 650 = 0.446%)
+    assert it.signal_snapshot.get("implied_move") == pytest.approx(2.90 / 650, abs=1e-4)
+
+
+def _nfp_ctx(**over):
+    """The NFP open-play setup shared by the straddle + IM/RM gate tests."""
+    kw = dict(
+        now=datetime(2026, 9, 4, 9, 31, tzinfo=ET),
+        chains={"SPY": _nfp_chain()},
+        contracts={"SPY": [
+            {"symbol": NFP_C650, "expiration_date": "2026-09-04", "strike_price": "650", "type": "call"},
+            {"symbol": NFP_P650, "expiration_date": "2026-09-04", "strike_price": "650", "type": "put"},
+        ]},
+        due_events=[{"time": "09:30", "tag": "NFP_OPEN_PLAY",
+                     "desc": "Post-NFP open playbook window", "status": "confirmed"}],
+    )
+    kw.update(over)
+    return make_ctx(**kw)
+
+
+def test_catalyst_straddle_skipped_when_vol_not_cheap() -> None:
+    """IM/RM gate (the fourth mine): a long straddle whose implied move is NOT cheap vs
+    the realized daily move must be skipped — it would just bleed theta on a quiet day.
+    IM = 2.90/650 = 0.446%; with RM = 0.30% the ratio is ~1.49 >> 0.85, so no straddle."""
+    ctx = _nfp_ctx(realized_moves={"SPY": 0.0030, "QQQ": 0.0030})
+    assert decide(ctx) == []
+
+
+def test_catalyst_straddle_fires_when_vol_cheap() -> None:
+    # RM = 1.2% makes IM 0.446% < 0.85*1.2% = 1.02% -> genuinely cheap vol -> buy.
+    ctx = _nfp_ctx(realized_moves={"SPY": 0.012, "QQQ": 0.012})
+    intents = decide(ctx)
+    assert len(intents) == 1 and intents[0].structure == Structure.STRADDLE
+
+
+def test_catalyst_directional_lean_unaffected_by_im_rm_gate() -> None:
+    """The gate guards ONLY the pure straddle. With a confirmed lean, the catalyst
+    still fires as a directional long even when event vol is not cheap (small RM)."""
+    ctx = _nfp_ctx(
+        signals={**_flat_signals(), "SPY": _bull_spy_signal(strength=0.65)},
+        realized_moves={"SPY": 0.0030, "QQQ": 0.0030},
+    )
+    intents = decide(ctx)
+    assert len(intents) == 1
+    assert intents[0].structure == Structure.LONG_CALL      # directional lean, not a straddle
+    assert intents[0].catalyst_tag == "NFP_OPEN_PLAY"
 
 
 def test_income_condor_on_range_day() -> None:

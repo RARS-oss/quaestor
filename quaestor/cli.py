@@ -632,8 +632,12 @@ def cmd_anchor() -> int:
         ["field", "value"],
         [[str(k), str(v)] for k, v in entry.items()],
     )
+    import os as _os
     if anchor.push_external(entry):
-        print("anchor: entry appended to the external witness (QUAESTOR_WITNESS_DIR).")
+        print("anchor: entry PUSHED to the external witness (durable off-box).")
+    elif _os.environ.get("QUAESTOR_WITNESS_DIR") or _os.environ.get("QUAESTOR_WITNESS_REPO"):
+        print("anchor: external push did NOT land — see stderr; the local witness "
+              "was written but is not durable against truncation.")
     else:
         print("anchor: external witness not configured "
               "(set QUAESTOR_WITNESS_DIR + QUAESTOR_WITNESS_REPO to publish).")

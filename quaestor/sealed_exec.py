@@ -103,15 +103,17 @@ class SealedExecutor:
             "--key", self._posix(self.key_path),
             "--", "python3", "/work/in_cell_execute.py",
         ]
+        # Read whatever the cell wrote FIRST — orders may have been placed and
+        # results.json written even if bulla was killed or the --out receipt write
+        # to drvfs hiccuped. Never discard real execution results because the
+        # receipt file is missing (that would hide live orders from the audit).
         try:
-            r = self._bulla_with_env(argv)
+            self._bulla_with_env(argv)
         except Exception:
-            return [], None
-        if not receipt_path.exists():
-            return [], None
-
+            pass
         results = self._read_results(cell_arg, cell_local)
-        return results, receipt_path
+        receipt = receipt_path if receipt_path.exists() else None
+        return results, receipt
 
     # ---- internals ----------------------------------------------------------------
 
@@ -175,9 +177,14 @@ class SealedExecutor:
         env["ALPACA_SECRET_KEY"] = self.settings.api_secret
         if self._windows:
             # The env must reach the WSL child: prefix the shell command with exports.
+            # A ~-prefixed token (the bulla binary AND the --work cell path on the
+            # Windows path) must stay unquoted so bash expands the tilde; cell_arg
+            # is _safe()-sanitized so it carries no shell metacharacters.
+            def _qtok(a: str) -> str:
+                return a if a.startswith("~") else _q(a)
             head, *rest = argv
-            head_s = head if head.startswith("~") else _q(head)
-            inner = " ".join([head_s, *(_q(a) for a in rest)])
+            head_s = _qtok(head)
+            inner = " ".join([head_s, *(_qtok(a) for a in rest)])
             sh = (f"export ALPACA_API_KEY={_q(self.settings.api_key)}; "
                   f"export ALPACA_SECRET_KEY={_q(self.settings.api_secret)}; {inner}")
             cmd = ["wsl", "-d", "Ubuntu", "--", "bash", "-lc", sh]

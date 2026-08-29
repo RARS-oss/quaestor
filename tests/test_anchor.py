@@ -185,14 +185,17 @@ def test_push_external_unconfigured_returns_false(tmp_path: Path, monkeypatch) -
     assert anchor.push_external(entry) is False
 
 
-def test_push_external_appends_to_configured_dir(tmp_path: Path, monkeypatch) -> None:
-    witness = tmp_path / "witness"  # non-git dir: append only, no commit attempted
+def test_push_external_local_only_appends_but_returns_false(tmp_path: Path, monkeypatch) -> None:
+    # A non-git dir gets the local append, but push_external returns FALSE: a
+    # local-only write is NOT an external witness and must not report success
+    # (returning True here would falsely claim the tail-truncation hole is closed).
+    witness = tmp_path / "witness"
     monkeypatch.setenv("QUAESTOR_WITNESS_DIR", str(witness))
     monkeypatch.delenv("QUAESTOR_WITNESS_REPO", raising=False)
     anchor = make_anchor(tmp_path)
     entry = anchor.anchor(0, "h0", "d0", "/l")
 
-    assert anchor.push_external(entry) is True
+    assert anchor.push_external(entry) is False   # not durably pushed off-box
     published = read_lines(witness / "anchors.jsonl")
     assert len(published) == 1 and published[0]["anchor_hash"] == entry["anchor_hash"]
 

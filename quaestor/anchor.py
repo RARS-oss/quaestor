@@ -172,20 +172,18 @@ class Anchor:
             return {}
 
     def push_external(self, entry: dict[str, Any]) -> bool:
-        """Best-effort append of ``entry`` to the external public witness.
+        """Publish ``entry`` to the external append-only witness. Returns True ONLY
+        when the entry was durably PUSHED to the remote host (that is what closes
+        the tail-truncation hole) — never for a local-only append.
 
-        Opt-in via the environment: ``QUAESTOR_WITNESS_DIR`` names a local working
-        tree (created if absent) and ``QUAESTOR_WITNESS_REPO`` names a git url or
-        local path (its presence signals intent to publish). The entry is appended
-        to ``<witness_dir>/anchors.jsonl``; if that directory is a git repository
-        the change is staged, committed (``"anchor seq N"``) and pushed. All git
-        calls run through subprocess with a 20s timeout and never raise.
-
-        Returns ``True`` once the entry is durably appended to the witness file
-        (the minimum witness), ``False`` when unconfigured or on failure. Because
-        the file holds only opaque hashes it leaks no strategy or code; the git
-        host's immutable, server-timestamped history is what makes it a genuine
-        external witness against tail-truncation.
+        Opt-in via the environment: ``QUAESTOR_WITNESS_DIR`` names a working tree
+        and/or ``QUAESTOR_WITNESS_REPO`` a git url. If the working tree is not yet a
+        git repo it is bootstrapped from the repo url (clone into an empty dir, else
+        ``git init`` + ``remote add origin``). The entry is appended to
+        ``<witness_dir>/anchors.jsonl`` (opaque hashes only — no strategy/code
+        leak), committed, and pushed; the host's immutable server-timestamped
+        history is the real witness. All git calls run via subprocess (20s
+        timeout) and never raise.
         """
         try:
             if not entry:
@@ -194,18 +192,37 @@ class Anchor:
             witness_repo = os.environ.get(ENV_WITNESS_REPO, "").strip()
             if not witness_dir and not witness_repo:
                 return False  # not opted in
-            if not witness_dir:
-                # Only the repo was named: keep a working tree under runs/.
-                witness_dir = str(self.runs_dir / "witness")
-            wdir = Path(witness_dir)
+            wdir = (Path(witness_dir).expanduser() if witness_dir
+                    else self.runs_dir / "witness")
+
+            # Bootstrap a git working tree from the repo url when needed.
+            if not (wdir / ".git").exists() and witness_repo:
+                wdir.parent.mkdir(parents=True, exist_ok=True)
+                if not wdir.exists() or not any(wdir.iterdir()):
+                    self._git(wdir.parent, ["clone", witness_repo, str(wdir)])
+                if not (wdir / ".git").exists():
+                    wdir.mkdir(parents=True, exist_ok=True)
+                    self._git(wdir, ["init"])
+                    self._git(wdir, ["remote", "add", "origin", witness_repo])
             wdir.mkdir(parents=True, exist_ok=True)
-            line = json.dumps(entry, sort_keys=True) + "\n"
+
             with (wdir / WITNESS_FILENAME).open("a", encoding="utf-8") as fh:
-                fh.write(line)
-            if (wdir / ".git").exists():
-                self._git(wdir, ["add", WITNESS_FILENAME])
-                self._git(wdir, ["commit", "-m", f"anchor seq {entry.get('seq')}"])
-                self._git(wdir, ["push"])
+                fh.write(json.dumps(entry, sort_keys=True) + "\n")
+
+            if not (wdir / ".git").exists():
+                # No repo to push to: the local append is not an EXTERNAL witness.
+                print("quaestor.anchor: witness written locally only — no git repo, "
+                      "NOT pushed off-box (tail-truncation hole not closed).",
+                      file=sys.stderr)
+                return False
+            self._git(wdir, ["add", WITNESS_FILENAME])
+            self._git(wdir, ["commit", "-m", f"anchor seq {entry.get('seq')}"])
+            push = self._git(wdir, ["push"])
+            if push is None or getattr(push, "returncode", 1) != 0:
+                err = "" if push is None else (getattr(push, "stderr", "") or "").strip()
+                print(f"quaestor.anchor: git push failed; external witness NOT durable: {err}",
+                      file=sys.stderr)
+                return False
             return True
         except Exception as exc:
             print(f"quaestor.anchor: push_external failed: {exc!r}", file=sys.stderr)

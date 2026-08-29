@@ -1,5 +1,6 @@
 """Live smoke for SealedExecutor: execute a real unfillable order in a sealed cell."""
 import json
+import uuid
 
 from quaestor.config import load_settings
 from quaestor.sealed_exec import SealedExecutor
@@ -12,7 +13,7 @@ print("available:", ex.available())
 payload = {
     "symbol": "SPY260904C00820000", "qty": "1", "side": "buy", "type": "limit",
     "limit_price": "0.01", "time_in_force": "day", "position_intent": "buy_to_open",
-    "client_order_id": "sealedexec-smoke-01",
+    "client_order_id": "sealedexec-smoke-" + uuid.uuid4().hex[:10],
 }
 results, receipt = ex.execute_cycle("smoke-cycle", [payload], poll_seconds=4)
 print("receipt:", receipt)

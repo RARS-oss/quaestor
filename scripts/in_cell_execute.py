@@ -130,17 +130,45 @@ def _execute_one(payload, poll_seconds, poll_interval, key, secret):
             "GET", f"/v2/orders:by_client_order_id?client_order_id={cid}", key, secret)
         if rid2:
             result["request_ids"].append(rid2)
-        if cur:
-            result["status"] = str(cur.get("status", result["status"]))
-            result["filled_qty"] = float(cur.get("filled_qty") or 0)
-            result["filled_avg_price"] = float(cur.get("filled_avg_price") or 0)
+        _absorb_snapshot(result, c2, cur)
 
     if result["status"] not in _TERMINAL and oid:
-        c3, _, rid3 = _req("DELETE", f"/v2/orders/{oid}", key, secret)
-        if rid3:
-            result["request_ids"].append(rid3)
-        result["status"] = "canceled" if result["filled_qty"] == 0 else "partially_filled"
+        # Cancel is async and may race a late fill (a DELETE can 422 precisely
+        # because the order just filled). Never derive the final status from the
+        # stale pre-cancel snapshot — re-read the real terminal state after DELETE
+        # so the sealed receipt can never disagree with the account.
+        try:
+            _, _, rid3 = _req("DELETE", f"/v2/orders/{oid}", key, secret)
+            if rid3:
+                result["request_ids"].append(rid3)
+        except Exception as exc:  # a raise must not corrupt the record
+            result["error"] = (result["error"] + f"; cancel: {exc!r}").strip("; ")
+        try:
+            c4, fin, rid4 = _req(
+                "GET", f"/v2/orders:by_client_order_id?client_order_id={cid}", key, secret)
+            if rid4:
+                result["request_ids"].append(rid4)
+            _absorb_snapshot(result, c4, fin)
+        except Exception as exc:
+            result["status"] = "unknown_working"  # ambiguous — never claim canceled
+            result["error"] = (result["error"] + f"; verify: {exc!r}").strip("; ")
+        if result["status"] not in _TERMINAL:
+            result["status"] = "canceled" if result["filled_qty"] == 0 else "partially_filled"
     return result
+
+
+def _absorb_snapshot(result, code, snap) -> None:
+    """Fold a GET-order response into result — ONLY when it is a real order body
+    (HTTP 200 + an id), and keep filled_qty monotonic so a transient error/stale
+    read (404/429/5xx JSON envelopes are truthy but carry no filled_qty) can never
+    erase an observed fill."""
+    if code != 200 or not snap or not snap.get("id"):
+        return
+    result["status"] = str(snap.get("status", result["status"]))
+    nq = float(snap.get("filled_qty") or 0)
+    if nq >= result["filled_qty"]:
+        result["filled_qty"] = nq
+        result["filled_avg_price"] = float(snap.get("filled_avg_price") or 0)
 
 
 def main() -> int:

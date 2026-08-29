@@ -107,6 +107,16 @@ FLATTEN_TAG: str = "ALL_CASH"
 IM_RM_CHEAP: float = 0.85
 RM_FLOOR_PCT: float = 0.008      # fallback realized daily move when we have no data (0.8%)
 # Which calendar tags fire the straddle playbook, and on which underlying.
+# Macro events that genuinely move the INDEX we trade -> straddle on that index.
+# Deliberately NO single-stock earnings here: AVGO_EARNINGS used to map to QQQ, but
+# Broadcom moving +-5% barely moves QQQ (+-0.25%), so a QQQ straddle can never pay for
+# the AVGO move -- a dead bet. Trading AVGO directly does not help either: an AMC report
+# (16:05, after the 16:00 close) can't be played by the intraday due-catalyst machinery,
+# and buying the +-5% straddle is overpriced event vol the IM/RM gate would correctly
+# skip. The only +EV AVGO play is HARVESTING the post-report IV crush (sell defined-risk),
+# which carries real gap risk and is a deliberate opt-in, not an auto-trade. So we sit out
+# AVGO earnings rather than place a bet that cannot win. (Kept in the calendar for
+# gap-risk awareness on the QQQ book, not as a trade trigger.)
 STRADDLE_PLAYS: dict[str, str] = {
     "NFP_OPEN_PLAY": "SPY",
     "NFP": "SPY",
@@ -115,7 +125,6 @@ STRADDLE_PLAYS: dict[str, str] = {
     "CLAIMS": "SPY",
     "ISM_MFG": "SPY",
     "ISM_SVC": "SPY",
-    "AVGO_EARNINGS": "QQQ",
 }
 
 _OCC_ROOT_RE = re.compile(r"[A-Z][A-Z0-9]{0,5}")

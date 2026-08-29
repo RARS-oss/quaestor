@@ -17,7 +17,10 @@ week:
     events:
       - {time: "08:30", tag: CLAIMS, desc: "Initial jobless claims", status: inferred}
       - {time: "10:00", tag: ISM_SVC, desc: "ISM Services PMI", status: inferred}
-      - {time: "16:05", tag: AVGO_EARNINGS, desc: "Broadcom earnings AMC (QQQ/SMH gap risk Friday)", status: inferred}
+      # Informational only — NOT a trade trigger (no STRADDLE_PLAYS mapping). AMC single-stock
+      # earnings can't be played by the intraday machinery, and buying the priced-in move is
+      # -EV. Listed for QQQ-book gap-risk awareness into Friday.
+      - {time: "16:05", tag: AVGO_EARNINGS, desc: "Broadcom earnings AMC (QQQ/SMH gap risk Friday) — informational", status: inferred}
   - date: 2026-09-04
     events:
       - {time: "08:30", tag: NFP, desc: "August jobs report — 2.5h before submission deadline", status: confirmed}

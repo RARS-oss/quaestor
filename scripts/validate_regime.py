@@ -147,8 +147,10 @@ def main(argv: list[str]) -> int:
     print("=" * 78)
 
     grand: dict[str, int] = {}
+    per_day: list[tuple[str, dict[str, int]]] = []
     for day in days:
         print(f"\n{day.isoformat()} ({day.strftime('%A')}):")
+        day_tally: dict[str, int] = {}
         for sym in symbols:
             try:
                 bars = _fetch(client, sym, day)
@@ -158,6 +160,19 @@ def main(argv: list[str]) -> int:
             tally = _walk(sym, day, bars)
             for k, v in tally.items():
                 grand[k] = grand.get(k, 0) + v
+                day_tally[k] = day_tally.get(k, 0) + v
+        per_day.append((day.isoformat(), day_tally))
+
+    # Per-day RANGE share — the friend's exact question: does the income sleeve go silent
+    # on real quiet days? A day near 0% range would mean the condor never sells that day.
+    print("\n" + "=" * 78)
+    print("PER-DAY income-sleeve activity (RANGE share = fraction of steps the condor could sell):")
+    for iso, dt in per_day:
+        tot = sum(dt.values()) or 1
+        rng = dt.get(R.RANGE, 0)
+        flag = "  <- income quiet" if rng / tot < 0.15 else ""
+        print(f"  {iso}: range {100*rng/tot:4.1f}%  trend {100*dt.get(R.TREND,0)/tot:4.1f}%  "
+              f"unknown {100*dt.get(R.UNKNOWN,0)/tot:4.1f}%{flag}")
 
     total = sum(grand.values()) or 1
     print("\n" + "=" * 78)

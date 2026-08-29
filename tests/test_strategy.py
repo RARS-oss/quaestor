@@ -305,6 +305,20 @@ def test_catalyst_straddle_fires_when_vol_cheap() -> None:
     assert len(intents) == 1 and intents[0].structure == Structure.STRADDLE
 
 
+def test_avgo_earnings_is_not_traded_via_index_proxy() -> None:
+    """Upgrade #4: a single-stock earnings tag must NOT trigger an index straddle.
+    Broadcom +-5% barely moves QQQ (+-0.25%), so a QQQ bet can't pay for the AVGO move.
+    AVGO_EARNINGS is informational only — no STRADDLE_PLAYS mapping -> no trade."""
+    ctx = make_ctx(
+        now=datetime(2026, 9, 3, 15, 55, tzinfo=ET),
+        due_events=[{"time": "16:05", "tag": "AVGO_EARNINGS",
+                     "desc": "Broadcom earnings AMC", "status": "inferred"}],
+    )
+    # no catalyst straddle/directional on QQQ (or anything) for AVGO earnings
+    assert all(i.catalyst_tag != "AVGO_EARNINGS" for i in decide(ctx))
+    assert all(i.structure != Structure.STRADDLE for i in decide(ctx))
+
+
 def test_catalyst_directional_lean_unaffected_by_im_rm_gate() -> None:
     """The gate guards ONLY the pure straddle. With a confirmed lean, the catalyst
     still fires as a directional long even when event vol is not cheap (small RM)."""

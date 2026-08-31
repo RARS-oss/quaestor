@@ -49,9 +49,11 @@ Alpaca facts encoded:
 """
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
+from statistics import NormalDist
 from typing import TYPE_CHECKING, Any, Iterator
 from zoneinfo import ZoneInfo
 
@@ -168,7 +170,14 @@ def decide(ctx: Context) -> list[TradeIntent]:
     aggregate-risk gate in risk.judge bounds the whole book's worst case."""
     intents: list[TradeIntent] = []
     all_cash = any(str(ev.get("tag") or "") == FLATTEN_TAG for ev in ctx.due_events or [])
-    intents.extend(_exit_intents(ctx, all_cash))
+    # The daily loss halt is an ENTRY gate by default: it blocks new positions but
+    # lets the open book ride to the curfew. With account.flatten_on_daily_halt the
+    # latch also closes the book, turning the halt into a real stop.
+    halt_flat = (
+        bool(_halted_today(ctx))
+        and bool(ctx.policy.get("account", {}).get("flatten_on_daily_halt", False))
+    )
+    intents.extend(_exit_intents(ctx, all_cash, halt_flat))
     if all_cash:
         return intents
 
@@ -223,15 +232,21 @@ def _iron_condor_intent(ctx: Context, u: str, chain: dict[str, dict], expiry: da
                 if (m := _occ_meta(occ)) is not None and m["expiry"] == expiry
                 and m["type"] == typ and _mid(q) is not None}
     calls, puts = _sub("C"), _sub("P")
-    sc = _choose_strike(calls, CONDOR_SHORT_DELTA, "C")
-    sp = _choose_strike(puts, CONDOR_SHORT_DELTA, "P")
+    # Read spot and one-sigma off the chain so the condor still builds when the
+    # feed sends no greeks — the 0DTE case, where delta is null across the board.
+    spot = _implied_spot(chain, expiry)
+    sigma_t = _sigma_t_from_chain(chain, expiry, spot)
+    sc = _choose_strike(calls, CONDOR_SHORT_DELTA, "C", spot=spot, sigma_t=sigma_t)
+    sp = _choose_strike(puts, CONDOR_SHORT_DELTA, "P", spot=spot, sigma_t=sigma_t)
     if sc is None or sp is None:
         return None
     sc_k, sp_k = _occ_meta(sc)["strike"], _occ_meta(sp)["strike"]
     lc = _choose_strike({k: v for k, v in calls.items()
-                         if _occ_meta(k)["strike"] > sc_k}, CONDOR_LONG_DELTA, "C")
+                         if _occ_meta(k)["strike"] > sc_k}, CONDOR_LONG_DELTA, "C",
+                        spot=spot, sigma_t=sigma_t)
     lp = _choose_strike({k: v for k, v in puts.items()
-                         if _occ_meta(k)["strike"] < sp_k}, CONDOR_LONG_DELTA, "P")
+                         if _occ_meta(k)["strike"] < sp_k}, CONDOR_LONG_DELTA, "P",
+                        spot=spot, sigma_t=sigma_t)
     if lc is None or lp is None:
         return None
     credit = round((_mid(calls[sc]) + _mid(puts[sp]))
@@ -275,6 +290,21 @@ def _iron_condor_intent(ctx: Context, u: str, chain: dict[str, dict], expiry: da
     )
 
 
+def _past_0dte_entry_cutoff(policy: dict, now_et: datetime) -> bool:
+    """True once policy.timing.no_new_0dte_after_et has passed.
+
+    Lets a playbook stop PROPOSING a 0DTE entry the risk gate would only reject,
+    so it can fall through to the next expiry instead of wasting the cycle.
+    """
+    raw = str(((policy or {}).get("timing") or {}).get("no_new_0dte_after_et") or "15:10")
+    try:
+        hh, mm = raw.split(":")
+        cutoff = now_et.replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
+    except (ValueError, AttributeError):
+        return False
+    return now_et >= cutoff
+
+
 def _income_condors(ctx: Context) -> list[TradeIntent]:
     """0-1DTE iron condor on a machine-classified RANGE day: sell ~0.18d call/put, buy
     further-OTM wings for defined risk, net credit. The only source of P&L in a quiet
@@ -290,17 +320,28 @@ def _income_condors(ctx: Context) -> list[TradeIntent]:
         contracts = (ctx.contracts or {}).get(u) or []
         if not chain or not contracts:
             continue
-        expiry = _choose_expiry(contracts, 0, ctx.now)
-        if expiry is None:
-            continue
-        dte = (expiry - _as_et(ctx.now).date()).days
-        if dte < 0 or dte > 1:
-            continue
-        it = _iron_condor_intent(ctx, u, chain, expiry, catalyst_tag="",
-                                 thesis_label=f"{u} range-day income (0-{dte}DTE)",
-                                 snapshot_extra={"regime": "range"})
-        if it is not None:
-            out.append(it)
+        # Walk the sleeve's whole 0-1DTE window rather than betting everything on
+        # the nearest expiry: if today's chain cannot produce a qualifying condor
+        # (thin quotes, penny credit, no greeks) tomorrow's still can, and a range
+        # day with no trade at all is the worst outcome available.
+        seen: set[date] = set()
+        # Past the 0DTE entry cutoff a same-day condor is dead on arrival at the
+        # timing gate, so don't spend the cycle on it — go straight to tomorrow.
+        targets = (1,) if _past_0dte_entry_cutoff(ctx.policy, _as_et(ctx.now)) else (0, 1)
+        for target_dte in targets:
+            expiry = _choose_expiry(contracts, target_dte, ctx.now)
+            if expiry is None or expiry in seen:
+                continue
+            seen.add(expiry)
+            dte = (expiry - _as_et(ctx.now).date()).days
+            if dte < 0 or dte > 1:
+                continue
+            it = _iron_condor_intent(ctx, u, chain, expiry, catalyst_tag="",
+                                     thesis_label=f"{u} range-day income (0-{dte}DTE)",
+                                     snapshot_extra={"regime": "range"})
+            if it is not None:
+                out.append(it)
+                break
     return out
 
 
@@ -641,7 +682,17 @@ def _catalyst_plays(ctx: Context) -> list[TradeIntent]:
 
 # --- playbook 3: exit management ---------------------------------------------
 
-def _exit_intents(ctx: Context, all_cash: bool) -> list[TradeIntent]:
+def _halted_today(ctx: Context) -> bool:
+    """Has the daily loss halt latched? Read from the portfolio the cycle judged."""
+    pf = getattr(ctx, "portfolio", None)
+    if pf is None:
+        return False
+    if isinstance(pf, dict):
+        return bool(pf.get("halted_today", False))
+    return bool(getattr(pf, "halted_today", False))
+
+
+def _exit_intents(ctx: Context, all_cash: bool, halt_flat: bool = False) -> list[TradeIntent]:
     """Exit management. Spreads exit as ONE mleg order (both legs reversed) —
     per-leg exits would strand the loser or leave a naked short the account
     cannot hold (Alpaca 403s an uncovering sell). Residual unpaired positions
@@ -649,9 +700,12 @@ def _exit_intents(ctx: Context, all_cash: bool) -> list[TradeIntent]:
     out: list[TradeIntent] = []
     now = _as_et(ctx.now)
     pairs, singles = _pair_spreads(_option_positions(ctx.account.positions))
+    force_flat = all_cash or halt_flat
+    force_reason = ("ALL_CASH: final-day flatten before submission deadline" if all_cash
+                    else "DAILY HALT: loss halt latched — flattening the book")
 
     for long_pos, short_pos in pairs:
-        intent = _spread_close_intent(ctx, long_pos, short_pos, now, all_cash)
+        intent = _spread_close_intent(ctx, long_pos, short_pos, now, force_flat, force_reason)
         if intent is not None:
             out.append(intent)
 
@@ -660,8 +714,8 @@ def _exit_intents(ctx: Context, all_cash: bool) -> list[TradeIntent]:
     for pos in sorted(singles, key=lambda p: _num(p.get("qty")) or 0.0):
         plpc = _pos_plpc(pos)
         reason = ""
-        if all_cash:
-            reason = "ALL_CASH: final-day flatten before submission deadline"
+        if force_flat:
+            reason = force_reason
         elif plpc is not None and plpc <= STOP_PLPC:
             reason = f"stop: unrealized {plpc:+.0%} <= -50% of debit"
         elif plpc is not None and plpc >= TARGET_PLPC:
@@ -709,7 +763,8 @@ def _pair_spreads(
 
 
 def _spread_close_intent(
-    ctx: Context, long_pos: dict, short_pos: dict, now: datetime, all_cash: bool
+    ctx: Context, long_pos: dict, short_pos: dict, now: datetime, all_cash: bool,
+    flat_reason: str = "ALL_CASH: final-day flatten before submission deadline",
 ) -> TradeIntent | None:
     """One mleg CLOSE for a paired vertical, judged on SPREAD-level P&L."""
     long_sym = str(long_pos.get("symbol") or "")
@@ -747,7 +802,7 @@ def _spread_close_intent(
     is_0dte = meta["expiry"] == now.date()
     reason = ""
     if all_cash:
-        reason = "ALL_CASH: final-day flatten before submission deadline"
+        reason = flat_reason
     elif is_credit and net_value is not None:
         # Credit spread: profit as the position decays toward zero. captured = how
         # much of the credit we keep if we buy it back now; cost_to_close = -net_value.
@@ -890,8 +945,14 @@ def _nearest_expiry_local(contracts: list[dict], target_dte: int, ref: date) -> 
     return best
 
 
-def _choose_strike(chain: dict[str, dict], target_delta: float, opt_type: str) -> str | None:
-    """universe.pick_strike when importable and its answer validates, else local."""
+def _choose_strike(chain: dict[str, dict], target_delta: float, opt_type: str, *,
+                   spot: float | None = None, sigma_t: float | None = None) -> str | None:
+    """universe.pick_strike when importable and its answer validates, else local
+    by delta, else — when the chain carries no greeks — by moneyness.
+
+    Callers that can supply `spot` and `sigma_t` keep working on a chain the feed
+    stripped of deltas; callers that cannot behave exactly as before.
+    """
     if not chain:
         return None
     try:
@@ -903,7 +964,10 @@ def _choose_strike(chain: dict[str, dict], target_delta: float, opt_type: str) -
                 return sym
     except Exception:
         pass
-    return _pick_strike_local(chain, target_delta, opt_type)
+    by_delta = _pick_strike_local(chain, target_delta, opt_type)
+    if by_delta is not None:
+        return by_delta
+    return _pick_strike_by_moneyness(chain, target_delta, opt_type, spot, sigma_t)
 
 
 def _pick_strike_local(chain: dict[str, dict], target_delta: float, opt_type: str) -> str | None:
@@ -920,6 +984,81 @@ def _pick_strike_local(chain: dict[str, dict], target_delta: float, opt_type: st
         if d is None:
             continue
         err = abs(abs(d) - target_delta)
+        if err < best_err:
+            best, best_err = occ, err
+    return best
+
+
+def _implied_spot(chain: dict[str, dict], expiry: date) -> float | None:
+    """Forward price implied by the chain itself — the strike where the call and
+    put mids are closest, since put-call parity is tightest at the money.
+
+    Lets strike selection work off the option chain alone: no extra market-data
+    call, and no dependence on greeks the feed may not send.
+    """
+    by_strike: dict[float, dict[str, float]] = {}
+    for occ, q in chain.items():
+        m = _occ_meta(occ)
+        mid = _mid(q) if isinstance(q, dict) else None
+        if m is None or m["expiry"] != expiry or mid is None:
+            continue
+        by_strike.setdefault(m["strike"], {})[m["type"]] = mid
+    pairs = [(abs(sides["C"] - sides["P"]), strike)
+             for strike, sides in by_strike.items()
+             if "C" in sides and "P" in sides]
+    if not pairs:
+        return None
+    pairs.sort()
+    return pairs[0][1]
+
+
+def _sigma_t_from_chain(chain: dict[str, dict], expiry: date,
+                        spot: float | None) -> float | None:
+    """One-sigma move to this expiry, as a fraction of spot, read off the ATM
+    straddle: straddle ~= sqrt(2/pi) * S * sigma*sqrt(T).
+
+    Priced from mids only, so it survives a feed that nulls every greek.
+    """
+    if not spot or spot <= 0:
+        return None
+    pair = _atm_pair(chain, expiry)
+    if pair is None:
+        return None
+    _c_sym, _p_sym, c_q, p_q = pair
+    straddle = (_mid(c_q) or 0.0) + (_mid(p_q) or 0.0)
+    if straddle <= 0:
+        return None
+    return straddle / (0.7978845608 * spot)
+
+
+def _pick_strike_by_moneyness(chain: dict[str, dict], target_delta: float,
+                              opt_type: str, spot: float | None,
+                              sigma_t: float | None) -> str | None:
+    """Strike selection for a chain that carries no greeks at all.
+
+    An OTM option's |delta| is approximately N(-x), where x is its log-moneyness
+    in standard deviations, so the strike that would carry `target_delta` sits
+    x = Phi^-1(1 - target_delta) sigmas out.
+
+    This is not a nicety: the free indicative feed nulls delta on the ENTIRE 0DTE
+    chain (measured 2026-08-31: 0 of 526 SPY quotes carried one), which left the
+    range-day income sleeve unable to build a condor and the agent unable to
+    trade at all on a range day.
+    """
+    if not chain or not spot or spot <= 0 or not sigma_t or sigma_t <= 0:
+        return None
+    td = min(max(float(target_delta), 1e-4), 0.4999)
+    x = NormalDist().inv_cdf(1.0 - td)
+    want = "C" if str(opt_type).upper().startswith("C") else "P"
+    target_k = spot * math.exp(x * sigma_t if want == "C" else -x * sigma_t)
+    best: str | None = None
+    best_err = float("inf")
+    for occ in sorted(chain):
+        q = chain[occ]
+        m = _occ_meta(occ)
+        if m is None or m["type"] != want or not isinstance(q, dict) or _mid(q) is None:
+            continue
+        err = abs(m["strike"] - target_k)
         if err < best_err:
             best, best_err = occ, err
     return best

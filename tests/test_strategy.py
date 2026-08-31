@@ -644,3 +644,93 @@ def test_0dte_flatten_window() -> None:
     ctx_early = make_ctx(now=datetime(2026, 9, 2, 14, 0, tzinfo=ET),
                          account=_account(positions=[pos_0dte]))
     assert decide(ctx_early) == []
+
+
+# --- strike selection without greeks -----------------------------------------
+# Regression guard for the live blocker found 2026-08-31: the free indicative
+# feed nulls delta on the ENTIRE 0DTE chain (0 of 526 SPY quotes carried one),
+# which made the range-day income sleeve unable to build a condor — so on a range
+# day the agent could not trade at all.
+
+import math
+
+from quaestor.strategy import (
+    _choose_strike, _implied_spot, _pick_strike_by_moneyness, _sigma_t_from_chain,
+)
+
+NG_EXP = "260904"
+NG_DATE = __import__("datetime").date(2026, 9, 4)
+
+
+def _no_greek_chain(spot: float = 700.0, sigma_t: float = 0.01) -> dict[str, dict]:
+    """A chain priced off one sigma, with EVERY delta set to None."""
+    chain: dict[str, dict] = {}
+    for k in range(int(spot) - 20, int(spot) + 21):
+        for cp in ("C", "P"):
+            x = (math.log(k / spot)) / sigma_t
+            # crude but monotone extrinsic so mids behave like a real smile
+            intrinsic = max(0.0, spot - k) if cp == "P" else max(0.0, k - spot)
+            extrinsic = 5.0 * math.exp(-0.5 * x * x)
+            mid = round(intrinsic + extrinsic, 2)
+            chain[_occ("SPY", NG_EXP, cp, k)] = _q(round(mid - 0.02, 2),
+                                                   round(mid + 0.02, 2), None)
+    return chain
+
+
+def test_implied_spot_finds_the_parity_strike() -> None:
+    chain = _no_greek_chain(spot=700.0)
+    assert _implied_spot(chain, NG_DATE) == pytest.approx(700.0, abs=1.0)
+
+
+def test_sigma_t_recovered_from_the_atm_straddle() -> None:
+    chain = _no_greek_chain(spot=700.0)
+    spot = _implied_spot(chain, NG_DATE)
+    sigma_t = _sigma_t_from_chain(chain, NG_DATE, spot)
+    # straddle ~= sqrt(2/pi) * S * sigma_t, so the recovered value must be a
+    # sane, positive fraction rather than None.
+    assert sigma_t is not None and 0.0 < sigma_t < 0.2
+
+
+def test_moneyness_puts_the_short_strike_outside_the_long_wing() -> None:
+    """0.18 delta must sit closer to spot than 0.08 delta, on both sides."""
+    chain = _no_greek_chain(spot=700.0)
+    spot, sigma_t = 700.0, 0.01
+    short_c = _pick_strike_by_moneyness(chain, 0.18, "C", spot, sigma_t)
+    long_c = _pick_strike_by_moneyness(chain, 0.08, "C", spot, sigma_t)
+    short_p = _pick_strike_by_moneyness(chain, 0.18, "P", spot, sigma_t)
+    long_p = _pick_strike_by_moneyness(chain, 0.08, "P", spot, sigma_t)
+    assert None not in (short_c, long_c, short_p, long_p)
+    k = lambda s: int(s[-8:]) / 1000.0            # noqa: E731
+    assert spot < k(short_c) < k(long_c)          # calls: wings further OTM
+    assert k(long_p) < k(short_p) < spot          # puts: mirrored
+
+
+def test_choose_strike_falls_back_to_moneyness_only_without_deltas() -> None:
+    chain = _no_greek_chain(spot=700.0)
+    # No deltas anywhere -> the delta path yields nothing, moneyness must answer.
+    assert _choose_strike(chain, 0.18, "C") is None
+    assert _choose_strike(chain, 0.18, "C", spot=700.0, sigma_t=0.01) is not None
+
+    # With a delta present, the delta path still wins — the fallback must not
+    # override real greeks when the feed does send them.
+    tagged = dict(chain)
+    target = _occ("SPY", NG_EXP, "C", 706)
+    tagged[target] = _q(1.0, 1.04, 0.18)
+    assert _choose_strike(tagged, 0.18, "C", spot=700.0, sigma_t=0.01) == target
+
+
+def test_income_sleeve_skips_0dte_past_the_entry_cutoff() -> None:
+    """Past no_new_0dte_after_et the sleeve must target tomorrow, not today.
+
+    Found live 2026-08-31: the sleeve built a 0DTE condor at 15:24 that the risk
+    gate then rejected for being past the 15:10 cutoff — burning the cycle instead
+    of falling through to the 1DTE expiry, which the cutoff does not govern.
+    """
+    from quaestor.strategy import _past_0dte_entry_cutoff
+    pol = {"timing": {"no_new_0dte_after_et": "15:10"}}
+    before = datetime(2026, 8, 31, 15, 9, tzinfo=ET)
+    after = datetime(2026, 8, 31, 15, 24, tzinfo=ET)
+    assert _past_0dte_entry_cutoff(pol, before) is False
+    assert _past_0dte_entry_cutoff(pol, after) is True
+    # a malformed/absent setting must not wedge the sleeve shut
+    assert _past_0dte_entry_cutoff({"timing": {"no_new_0dte_after_et": "junk"}}, after) is False

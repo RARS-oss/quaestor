@@ -40,8 +40,11 @@ signed net limit prices, idempotent `client_order_id` with lookup-before-retry,
 marketable-limit + cancel/repost execution tuned to the paper fill model
 (NBBO-touch fills, 10% random partials); every `X-Request-ID` archived.
 Market Data API: IEX stock feed + indicative options feed (chains, greeks, IV).
-**Alpaca CLI v0.0.14** (pinned) powers ops tooling inside the attestation cells;
-the **Alpaca MCP server** is wired for interactive ops. The audit trail follows
+**Alpaca CLI v0.0.14** (pinned, headless via `APCA_API_KEY_ID`) and the **Alpaca
+MCP server** (`alpaca-mcp-server` 2.3.0, see `.mcp.json`) are the operator surface
+on this account. Multi-leg entries deliberately go through the Trading API
+directly rather than the MCP server, whose `mleg` path is broken (#97) — and
+every leg of every condor this agent opens is multi-leg. The audit trail follows
 Alpaca's own `alpaca-skills` runs/ contract (orders.json, order_log.csv,
 position snapshots) — extended with signed receipts.
 

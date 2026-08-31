@@ -394,9 +394,21 @@ def test_daily_halt_blocks_when_latched(policy, account):
 
 
 def test_daily_halt_passes_above_threshold(policy, account):
-    verdict = run_judge(make_vertical(), policy, account,
-                        state=fresh_state(day_pnl_pct=-14.9))
-    assert get_check(verdict, "daily_halt").ok
+    """The gate's contract is the boundary, not a particular number.
+
+    Derived from the policy so retuning daily_loss_halt_pct is a config decision
+    and not a test failure — this test hardcoded -14.9 against an 18% threshold
+    and broke the moment the threshold moved to 12 on 2026-08-31.
+    """
+    halt = float(policy["account"]["daily_loss_halt_pct"])
+
+    above = run_judge(make_vertical(), policy, account,
+                      state=fresh_state(day_pnl_pct=-(halt - 0.1)))
+    assert get_check(above, "daily_halt").ok
+
+    at_the_line = run_judge(make_vertical(), policy, account,
+                            state=fresh_state(day_pnl_pct=-halt))
+    assert not get_check(at_the_line, "daily_halt").ok
 
 
 def test_weekly_halt_pass_and_fail(policy, account):

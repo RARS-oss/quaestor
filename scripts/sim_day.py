@@ -328,6 +328,64 @@ def _storm_path(base: float) -> list[float]:
             for i in range(79)]
 
 
+def _trap_path(base: float) -> list[float]:
+    """A BULL TRAP — the day that hurts a long-premium momentum agent.
+
+    Rallies ~0.8% through the first hour, which is exactly when the agent is
+    loading up on calls, then slides to -2.0% and stays there. Long premium
+    bought near the high bleeds on both direction and theta. This is the only
+    scenario in which the daily loss halt, the per-trade stops and the forced
+    flatten actually get exercised end to end — trend/range/storm are all
+    profitable, so before this the loss machinery was only ever unit-tested.
+    """
+    pts = []
+    for i in range(79):
+        frac = i / 78.0
+        if frac <= 0.15:                      # 09:30-10:30 — the bait
+            move = 0.008 * (frac / 0.15)
+        else:                                 # the rest of the day — the slide
+            move = 0.008 - 0.028 * min(1.0, (frac - 0.15) / 0.55)
+        wiggle = 0.0008 * math.sin(i * 0.9)
+        pts.append(round(base * (1.0 + move + wiggle), 2))
+    return pts
+
+
+def _chop_path(base: float) -> list[float]:
+    """The path that actually hurts: a whipsaw tuned to the agent's own latency.
+
+    Momentum needs a few bars to call a move, so a ~60-minute oscillation has the
+    agent buying every local top and every local bottom, then stopping out as the
+    move reverses — the classic way a long-premium momentum book bleeds, with
+    theta on top. Unlike trend/range/storm/trap (all profitable), this is the
+    scenario that puts the per-trade stops and the daily loss halt under load.
+    """
+    pts = []
+    for i in range(79):
+        swing = 0.005 * math.sin(i * (2.0 * math.pi / 12.0))
+        pts.append(round(base * (1.0 + swing), 2))
+    return pts
+
+
+def _vshape_path(base: float) -> list[float]:
+    """The adversarial case FOR flattening on the halt: a V.
+
+    Slides ~2.5% into late morning — deep enough to latch the daily halt — then
+    rallies all the way back and closes green. Holding the book through it
+    recovers; flattening at the latch locks the loss in at the worst moment and
+    misses the rally. Any recommendation to turn the halt into a real stop has to
+    be priced against this day, not only against the chop day it obviously helps.
+    """
+    pts = []
+    for i in range(79):
+        frac = i / 78.0
+        if frac <= 0.30:                      # 09:30-~11:30 — the slide
+            move = -0.025 * (frac / 0.30)
+        else:                                 # the rest — the recovery, closing green
+            move = -0.025 + 0.035 * ((frac - 0.30) / 0.70)
+        pts.append(round(base * (1.0 + move + 0.0006 * math.sin(i * 0.9)), 2))
+    return pts
+
+
 def main() -> int:
     mode = sys.argv[2] if len(sys.argv) > 2 else "trend"
     start = datetime.combine(SIM_DATE, dtime(9, 30), tzinfo=ET)
@@ -335,12 +393,27 @@ def main() -> int:
         spy, qqq = _range_path(660.0), _range_path(585.0)
     elif mode == "storm":
         spy, qqq = _storm_path(660.0), _storm_path(585.0)
+    elif mode == "trap":
+        spy, qqq = _trap_path(660.0), _trap_path(585.0)
+    elif mode == "chop":
+        spy, qqq = _chop_path(660.0), _chop_path(585.0)
+    elif mode == "vshape":
+        spy, qqq = _vshape_path(660.0), _vshape_path(585.0)
     else:
         spy, qqq = _spy_path(), _qqq_path()
     mkt = DayMarket(now=start, spots={"SPY": spy[0], "QQQ": qqq[0]},
                     path={"SPY": spy, "QQQ": qqq})
 
     agent = build_agent()
+    # Sweep hooks: mutate the loaded policy IN PLACE so every holder (the risk
+    # gates and the portfolio's halt latch) sees the same override.
+    import os as _os
+    _halt = _os.environ.get("SIM_HALT_PCT")
+    _flat = _os.environ.get("SIM_FLATTEN_ON_HALT")
+    if _halt:
+        agent.policy["account"]["daily_loss_halt_pct"] = float(_halt)
+    if _flat:
+        agent.policy["account"]["flatten_on_daily_halt"] = _flat.lower() in ("1", "true", "yes")
     agent.broker = FakeBroker(mkt)
     agent.data = FakeData(mkt)
     agent.sealed_executor = None       # pure offline sim (execution path is the FakeBroker)
@@ -370,10 +443,24 @@ def main() -> int:
     running_peak = 100_000.0
     max_dd = 0.0                       # true peak-to-later-trough drawdown (<= 0)
     cycles = 0
+    # Watch the loss machinery, not just the P&L: when did the daily halt latch,
+    # what was the day P&L at that moment, and how much more did the book bleed
+    # afterwards? The halt is an ENTRY gate — it stops new positions but never
+    # flattens the open ones — so the gap between those two numbers is the real
+    # exposure a halt still leaves on the table.
+    halt_at: str | None = None
+    halt_day_pnl: float | None = None
+    halt_equity: float | None = None
+
     for step in range(79):
         agent.run_cycle()
         cycles += 1
         eq = agent.broker.account_snapshot().equity
+        pf = getattr(agent, "portfolio", None)
+        if halt_at is None and pf is not None and getattr(pf, "halted_today", False):
+            halt_at = mkt.now.strftime("%H:%M")
+            halt_day_pnl = float(getattr(pf, "day_pnl_pct", 0.0))
+            halt_equity = eq
         peak_equity = max(peak_equity, eq)
         trough_equity = min(trough_equity, eq)
         running_peak = max(running_peak, eq)
@@ -395,6 +482,16 @@ def main() -> int:
     print(f"   intraday peak/trough : ${peak_equity:,.0f} / ${trough_equity:,.0f}")
     print(f"   open positions at EOD: {len(final.positions)}")
     print(f"   max drawdown         : {max_dd * 100:.2f}%   (true peak-to-trough)")
+
+    day_pnl_pct = (final.equity / 100_000 - 1.0) * 100.0
+    if halt_at is not None:
+        bled_after = day_pnl_pct - (halt_day_pnl or 0.0)
+        print(f"   daily halt           : LATCHED at {halt_at} "
+              f"(day P&L {halt_day_pnl:+.2f}%, equity ${halt_equity:,.0f})")
+        print(f"   bleed after the halt : {bled_after:+.2f}% "
+              "— the open book keeps moving; the halt only blocks NEW positions")
+    else:
+        print(f"   daily halt           : never latched (day P&L {day_pnl_pct:+.2f}%)")
 
     ok = True
     if not fb.trade_log:

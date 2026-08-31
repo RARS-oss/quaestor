@@ -5,7 +5,17 @@ version: 1
 # budget + defined-risk-only + daily/weekly halts make blowing up impossible by
 # construction — the worst case is bounded to the deployed premium.
 account:
-  daily_loss_halt_pct: 18          # stop opening new positions for the day at -18% vs day open
+  daily_loss_halt_pct: 12          # latch the daily halt at -12% vs day open. NOT the loss
+                                   # we accept: the gate is sampled once per 5-min cycle, and
+                                   # on 130-190 contract positions one cycle overshoots several
+                                   # points, so -12% lands near -18% realized. Measured
+                                   # 2026-08-31 on scripts/sim_day.py chop: an -18% setting
+                                   # latched at -23.45%.
+  flatten_on_daily_halt: true      # the halt CLOSES the book, it is not just an entry gate.
+                                   # Without this the open positions ride to the curfew and
+                                   # bled a further -11.29% after the latch (chop day: -34.73%
+                                   # final vs -12.23% with this on). Costs nothing on the four
+                                   # profitable sim scenarios — the halt never latches there.
   weekly_loss_halt_pct: 30         # hard stop for the rest of the contest (the floor)
   max_open_risk_pct: 55            # "cannot blow up" gate: total open premium-at-risk <= 55% equity
   max_concurrent_positions: 5      # more shots on goal (was 3)

@@ -95,10 +95,12 @@ is the easiest to check. That's the point.
                                         └────────────────────────────────────┘
 ```
 
-The agent loop (`agent.py`) runs every 5 minutes during market hours in WSL2. The Alpaca **CLI**
-(pinned v0.0.14) and **MCP server** (2.3.0, `.mcp.json`) are the operator surface; orders
-themselves go through the Trading API directly — the MCP server's `mleg` path is broken
-(#97) and every entry this agent makes is multi-leg — with every `X-Request-ID` archived.
+The agent loop (`agent.py`) runs every 5 minutes during market hours in WSL2. Every cycle calls the Alpaca
+**CLI** (pinned v0.0.14) and seals its verbatim answer into that cycle's signed receipt, so
+the integration is verifiable rather than asserted; the **MCP server** (2.3.0, `.mcp.json`)
+is the interactive surface. Orders themselves go through the Trading API directly — the MCP
+server's `mleg` path is broken (#97) and every entry this agent makes is multi-leg — with
+every `X-Request-ID` archived.
 
 ## Quickstart
 

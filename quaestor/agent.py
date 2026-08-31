@@ -44,6 +44,7 @@ from typing import Any, Callable
 
 from quaestor import clock
 from quaestor import orders as orders_mod
+from quaestor import alpaca_cli
 from quaestor import regime as regime_mod
 from quaestor import risk as risk_mod
 from quaestor import sentiment as sentiment_mod
@@ -394,6 +395,19 @@ class Agent:
         except Exception as exc:
             notes.append(f"clock.is_market_open_now failed: {exc!r}")
 
+        # Alpaca's own CLI, once per cycle: the contest requires the agent to use
+        # Alpaca's tooling, and on this project a requirement should be provable
+        # from a signed receipt rather than asserted in a write-up. Its clock is
+        # reconciled against ours and the verbatim answer is sealed below.
+        # Fail-open: a missing or broken CLI is recorded, never fatal.
+        try:
+            cli_probe = alpaca_cli.probe_clock(self.settings)
+        except Exception as exc:                      # defensive: must never stop a cycle
+            cli_probe = {"tool": "alpaca-cli", "ok": False, "error": repr(exc)}
+        cli_note = alpaca_cli.reconcile(cli_probe, market_open)
+        if cli_note:
+            notes.append(cli_note)
+
         # -- step 2: account + portfolio state --------------------------------
         account: AccountSnapshot | None = None
         try:
@@ -628,6 +642,7 @@ class Agent:
                 "inputs": {
                     "account": rec.account.to_dict() if rec.account else None,
                     "market_open": market_open,
+                    "alpaca_cli": cli_probe,
                 },
                 "replay": {
                     "now": now.isoformat(),

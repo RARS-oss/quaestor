@@ -28,3 +28,4 @@ venv/
 htmlcov/
 receipts.dev-*/
 runs/state.dev-*/
+runs/sessions.dev-*/

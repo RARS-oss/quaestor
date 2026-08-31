@@ -3,7 +3,7 @@
 <p align="center"><b>An autonomous options-trading agent whose every trade is cryptographically signed, hermetically sealed, and independently verifiable.</b></p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/tests-161%20passing-2f8f5b" alt="tests">
+  <img src="https://img.shields.io/badge/tests-190%20passing-2f8f5b" alt="tests">
   <img src="https://img.shields.io/badge/receipts-Ed25519%20signed-2f8f5b" alt="signed">
   <img src="https://img.shields.io/badge/verify-offline%20%2F%20in--browser-2bc4b2" alt="verify">
   <img src="https://img.shields.io/badge/trading-paper%20only-0e9c8c" alt="paper">

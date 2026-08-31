@@ -1,6 +1,6 @@
 # quaestor — one-page write-up (DRAFT v1, will be finalized Sep 3-4 with live results)
 
-**Team:** RARS-oss (solo) · **Account ID:** _<fresh $100k competition account, created before final run>_
+**Team:** RARS-oss (solo) · **Account ID:** `PA3MOH6DEEEH` (fresh paper account, opened 2026-08-31, funded at exactly $100,000)
 **Repo:** github.com/RARS-oss/quaestor · **Demo:** _<dashboard URL>_
 
 ## AI logic
@@ -19,9 +19,13 @@ replayable; intelligence went into the design, auditability into the runtime.
 ## Risk gates (enforced, then *proven*)
 
 Deterministic gates judge every intent before execution: per-trade worst-case
-loss ≤ 10% of equity (20% for tagged catalysts), daily halt at −15%, ≤3
-concurrent positions, per-underlying concentration caps, spread-quality ≤3%,
-open-interest and price floors, 0DTE time cutoffs, final-day auto-flatten.
+loss ≤ 12% of equity (22% for tagged catalysts, 2.5% for premium-selling income),
+total open premium-at-risk ≤ 55% of equity, ≤5 concurrent positions, a daily
+halt at −12% that also **flattens the open book**, a −30% weekly floor,
+per-underlying concentration caps, spread-quality ≤3%, open-interest and price
+floors, 0DTE time cutoffs, final-day auto-flatten. The daily halt is evaluated
+once per 5-minute cycle, so the realized stop lands modestly below its trigger —
+the setting is chosen for where it lands, not where it reads.
 The policy lives in `configs/policy.yaml`; its **sha256 digest is signed into
 every receipt**, so silently loosening the rules mid-week is cryptographically
 visible. Each order additionally carries a **zero-knowledge Bulletproofs range

@@ -26,3 +26,5 @@ venv/
 .ruff_cache/
 .coverage
 htmlcov/
+receipts.dev-*/
+runs/state.dev-*/

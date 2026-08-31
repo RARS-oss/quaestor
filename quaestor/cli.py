@@ -281,7 +281,7 @@ def cmd_replay(ref: str | None) -> int:
 
     rows: list[list[str]] = []
     all_ok = True
-    total_intents = reproduced = 0
+    total_intents = reproduced = undecided = 0
     for r in refs:
         rep = replay_cycle(settings.receipts_dir, policy, r)
         if not rep.get("found"):
@@ -290,21 +290,36 @@ def cmd_replay(ref: str | None) -> int:
         results = rep.get("results", [])
         total_intents += len(results)
         reproduced += sum(1 for x in results if x.get("match"))
-        cycle_ok = rep.get("all_match") and rep.get("policy_digest_match", True)
-        all_ok = all_ok and cycle_ok
+        # Determinism is the claim under test, and it is decided by whether the
+        # verdicts re-derive — not by whether policy.yaml has since been edited.
+        # A cycle we cannot decide (old receipt, no sealed policy, rules moved on)
+        # is reported as undecided, never as a determinism failure.
+        decidable = rep.get("decidable", rep.get("policy_digest_match", True))
+        cycle_ok = bool(rep.get("all_match")) and decidable
+        if not decidable:
+            undecided += 1
+        else:
+            all_ok = all_ok and cycle_ok
         detail = f"{sum(1 for x in results if x.get('match'))}/{len(results)} verdicts"
         if not rep.get("policy_digest_match", True):
-            detail += " · policy changed"
+            detail += (" · policy changed, judged under the sealed copy"
+                       if rep.get("judged_under") == "sealed" else
+                       " · policy changed, no sealed copy")
         rows.append([
             str(rep.get("cycle_id", r))[:22],
             "✓" if rep.get("policy_digest_match") else "≠",
-            "REPRODUCES" if cycle_ok else "MISMATCH",
+            "REPRODUCES" if cycle_ok else ("UNDECIDED" if not decidable else "MISMATCH"),
             detail,
         ])
     _render_table("quaestor replay — decisions re-derived from signed inputs",
                   ["cycle", "policy", "result", "detail"], rows)
-    print(f"replay: {reproduced}/{total_intents} risk verdicts reproduced from sealed inputs; "
-          + ("all cycles reproduce ✓" if all_ok else "some cycles did not reproduce ✗"))
+    summary = (f"replay: {reproduced}/{total_intents} risk verdicts reproduced from "
+               f"sealed inputs; ")
+    summary += "all decidable cycles reproduce ✓" if all_ok else "some cycles did not reproduce ✗"
+    if undecided:
+        summary += (f" ({undecided} cycle(s) undecided — receipts predating the sealed "
+                    f"policy body, judged under rules that have since changed)")
+    print(summary)
     return 0 if all_ok else 1
 
 
@@ -338,14 +353,37 @@ def cmd_preflight() -> int:
         return 1
 
     try:
-        acct = Broker(settings).account_snapshot()
-        check("account reachable + active", acct.equity > 0,
-              f"${acct.equity:,.0f} equity")
-        check("options level 3 (spreads)", acct.options_trading_level >= 3,
-              f"L{acct.options_trading_level}")
-        check("fresh $100k competition account", abs(acct.equity - 100_000) < 1e-6,
-              f"equity ${acct.equity:,.0f} — a fresh comp account starts at exactly $100,000",
-              critical=False)
+        with Broker(settings) as b:
+            acct = b.account_snapshot()
+            check("account reachable + active", acct.equity > 0,
+                  f"${acct.equity:,.0f} equity")
+            check("options level 3 (spreads)", acct.options_trading_level >= 3,
+                  f"L{acct.options_trading_level}")
+
+            # Freshness is a PRE-LAUNCH gate: the contest requires a brand-new
+            # account, and equity alone cannot see it — an account that traded
+            # back to flat still reads exactly $100,000. Look at positions and
+            # order history too. Once our own run has begun the account
+            # legitimately has history, so the check turns informational.
+            started = any(settings.receipts_dir.glob("c-*.json"))
+            try:
+                positions = b.positions()
+                history = b.recent_orders(limit=5, status="all")
+            except Exception as exc:
+                check("account history readable", False, repr(exc), critical=False)
+            else:
+                detail = (f"equity ${acct.equity:,.2f}, {len(positions)} position(s), "
+                          f"{len(history)} order(s) in history")
+                if started:
+                    check("competition account (run already under way)", True,
+                          detail + " — freshness gate was cleared at launch",
+                          critical=False)
+                else:
+                    pristine = (abs(acct.equity - 100_000) < 1e-6
+                                and not positions and not history)
+                    check("fresh competition account — no prior history", pristine,
+                          detail + ("" if pristine else
+                                    " — the contest requires a brand-new $100,000 account"))
     except Exception as exc:
         check("account reachable", False, repr(exc))
 
@@ -534,35 +572,104 @@ def _rehearsal_portfolio(settings, account, now):
 
 def _prove_order_path(broker, settings, chains, contracts, now, check,
                       Leg, Side, PositionIntent, Structure, TradeIntent, orders_mod):
-    """Build a deep-OTM SPY debit vertical from live contracts, submit at $0.01
-    (won't fill), confirm acceptance, cancel. Proves the real mleg order path."""
+    """Submit one real SPY debit vertical priced far below its true debit, confirm
+    acceptance, cancel it, and VERIFY the cancel took.
+
+    Two traps this walks around, both of which bit us live on 2026-08-31:
+      * "$0.01 can't fill" is FALSE on Alpaca paper. Paper fills at the NBBO
+        touch, so a $0.01 limit on penny-quoted deep-OTM strikes fills instantly.
+        The legs are therefore chosen from strikes that carry a real ask, where a
+        $0.01 net debit is nowhere near marketable.
+      * A cancel that is not read back proves nothing: DELETE answers 422 for an
+        already-filled order, which is exactly the case we must catch.
+    """
+    import time
+
     spy = contracts.get("SPY", [])
+    quotes = chains.get("SPY", {})
+
+    def _ask(sym: str) -> float | None:
+        q = quotes.get(sym) or {}
+        a = q.get("ask")
+        try:
+            return float(a) if a is not None else None
+        except (TypeError, ValueError):
+            return None
+
     calls = sorted(
         (c for c in spy if str(c.get("type")) == "call" and c.get("tradable", True)),
         key=lambda c: float(c.get("strike_price", 0)))
     if len(calls) < 2:
         check("order path (submit+cancel)", False, "not enough SPY call contracts")
         return
-    buy_c, sell_c = calls[-2], calls[-1]  # two deepest-OTM adjacent strikes
+
+    # Adjacent strikes whose long leg carries real premium: the deeper-ITM leg must
+    # be worth well over our $0.01 limit, so the spread cannot be marketable.
+    pair = None
+    for lo, hi in zip(calls, calls[1:]):
+        a_lo, a_hi = _ask(lo["symbol"]), _ask(hi["symbol"])
+        if a_lo is not None and a_hi is not None and a_lo >= 0.20 and a_lo > a_hi:
+            pair = (lo, hi, a_lo - a_hi)
+            break
+    if pair is None:
+        check("order path (submit+cancel)", False,
+              "no SPY call pair with a real ask — refusing to send an order that could fill")
+        return
+    buy_c, sell_c, true_debit = pair
+
     intent = TradeIntent(
         underlying="SPY", structure=Structure.VERTICAL_DEBIT,
         legs=[Leg(buy_c["symbol"], Side.BUY, 1, PositionIntent.BUY_TO_OPEN),
               Leg(sell_c["symbol"], Side.SELL, 1, PositionIntent.SELL_TO_OPEN)],
         qty=1, limit_price=0.01,
-        thesis="rehearsal — unfillable, cancel at once", max_loss_usd=1.0,
+        thesis="rehearsal — priced far under the real debit, cancel at once",
+        max_loss_usd=1.0,
     )
     payload = orders_mod.build_order_payload(intent, attempt=1)
     order, rid = broker.submit(payload)
     accepted = str(order.get("status", "")) in ("accepted", "new", "pending_new", "held")
     check("order path: submit accepted", accepted,
-          f"{buy_c['symbol']}/{sell_c['symbol']} status={order.get('status')} rid={rid[:8]}")
-    oid = order.get("id", "")
-    if oid:
-        broker.cancel(oid)
-        check("order path: cancel", True, "order canceled")
+          f"{buy_c['symbol']}/{sell_c['symbol']} limit=$0.01 vs real debit ≈${true_debit:.2f} "
+          f"status={order.get('status')} rid={rid[:8]}")
 
+    oid = str(order.get("id", ""))
+    if not oid:
+        check("order path: cancel verified", False, "broker returned no order id")
+        return
 
-# ---------------------------------------------------------------------- verify
+    broker.cancel(oid)
+
+    status, filled_qty = "", 0.0
+    for _ in range(10):
+        got = broker.get_order(oid) or {}
+        status = str(got.get("status", ""))
+        try:
+            filled_qty = float(got.get("filled_qty") or 0)
+        except (TypeError, ValueError):
+            filled_qty = 0.0
+        if status in ("canceled", "expired", "rejected", "filled", "done_for_day"):
+            break
+        time.sleep(0.5)
+
+    check("order path: cancel verified", status in ("canceled", "expired", "rejected"),
+          f"final status={status or 'unknown'}")
+
+    if filled_qty > 0 or status == "filled":
+        # The premise failed and we are now holding a real position on the
+        # competition account. Say so loudly and flatten it rather than leaving it.
+        flattened = []
+        for leg in (buy_c["symbol"], sell_c["symbol"]):
+            try:
+                broker.close_position(leg)
+                flattened.append(leg)
+            except Exception:
+                pass
+        check("order path: rehearsal order did not fill", False,
+              f"FILLED {filled_qty:g} — a rehearsal order must never fill; "
+              f"flattened {len(flattened)}/2 leg(s), CHECK THE ACCOUNT")
+    else:
+        check("order path: rehearsal order did not fill", True,
+              "no fill — the account is untouched")
 
 def cmd_verify() -> int:
     from quaestor.config import load_settings

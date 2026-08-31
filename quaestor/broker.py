@@ -192,6 +192,29 @@ class Broker:
         data = self._request("GET", "/v2/positions").json()
         return list(data) if isinstance(data, list) else []
 
+    def get_order(self, order_id: str) -> dict[str, Any] | None:
+        """GET /v2/orders/{id} — None if it does not exist (404).
+
+        Needed to VERIFY a cancel actually took: a filled order cannot be
+        canceled, and DELETE answers 422 for it, so a cancel that is not read
+        back is not a proof of anything.
+        """
+        resp = self._request("GET", f"/v2/orders/{order_id}", allow={404})
+        if resp.status_code == 404:
+            return None
+        return resp.json()
+
+    def recent_orders(self, limit: int = 5, status: str = "all") -> list[dict[str, Any]]:
+        """GET /v2/orders?status=… — order history, newest first.
+
+        Used by preflight to prove a competition account is genuinely untouched:
+        equity alone cannot tell a fresh account from one that traded back to flat.
+        """
+        data = self._request("GET", "/v2/orders",
+                             params={"status": status, "limit": str(limit),
+                                     "direction": "desc"}).json()
+        return list(data) if isinstance(data, list) else []
+
     def open_orders(self) -> list[dict[str, Any]]:
         """GET /v2/orders?status=open — includes mleg parents with their legs."""
         data = self._request("GET", "/v2/orders", params={"status": "open", "limit": "500"}).json()

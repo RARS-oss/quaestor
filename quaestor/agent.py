@@ -632,6 +632,10 @@ class Agent:
                 "replay": {
                     "now": now.isoformat(),
                     "policy_digest": str(self.policy.get("digest", "")),
+                    # The policy BODY, not just its digest: a later edit to
+                    # policy.yaml must not cost us the ability to re-derive this
+                    # cycle under the rules that actually judged it.
+                    "policy": self.policy,
                     "account": rec.account.to_dict() if rec.account else None,
                     "portfolio_state": portfolio_state,
                     "chains": replay_chains,

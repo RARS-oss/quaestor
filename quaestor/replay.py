@@ -110,6 +110,18 @@ def replay_cycle(receipts_dir: Path, policy: dict, ref: str) -> dict[str, Any]:
     current_digest = str(policy.get("digest", ""))
     digest_match = sealed_digest == current_digest
 
+    # Re-derive under the rules that actually judged this cycle when the receipt
+    # sealed them. Without the sealed body we can only re-run the CURRENT rules,
+    # which proves nothing about determinism once policy.yaml has moved on.
+    sealed_policy = block.get("policy")
+    if isinstance(sealed_policy, dict) and sealed_policy:
+        judge_policy = sealed_policy
+        judged_under = "sealed"
+    else:
+        judge_policy = policy
+        judged_under = "current"
+    decidable = judged_under == "sealed" or digest_match
+
     now = _parse_dt(block.get("now", ""))
     account = reconstruct_account(block.get("account") or {})
     portfolio_state = block.get("portfolio_state") or {}
@@ -126,7 +138,7 @@ def replay_cycle(receipts_dir: Path, policy: dict, ref: str) -> dict[str, Any]:
             continue
         chain = chains.get(intent.underlying, {})
         rederived = risk_mod.judge(
-            intent, policy=policy, account=account,
+            intent, policy=judge_policy, account=account,
             portfolio_state=portfolio_state, chain=chain, now=now)
         sealed = sealed_verdicts.get(intent.intent_id, {})
         sealed_ok = bool(sealed.get("approved"))
@@ -154,10 +166,15 @@ def replay_cycle(receipts_dir: Path, policy: dict, ref: str) -> dict[str, Any]:
         "policy_digest_match": digest_match,
         "sealed_policy_digest": sealed_digest[:16],
         "current_policy_digest": current_digest[:16],
+        "judged_under": judged_under,
+        "decidable": decidable,
         "results": results,
         "all_match": all_match,
-        "note": "" if digest_match else
-                "policy.yaml changed since this cycle — re-derivation uses the CURRENT rules",
+        "note": "" if digest_match else (
+            "policy.yaml changed since this cycle — re-derived under the policy "
+            "sealed in the receipt" if judged_under == "sealed" else
+            "policy.yaml changed and this receipt did not seal the policy body — "
+            "determinism cannot be decided for this cycle"),
     }
 
 

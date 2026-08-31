@@ -60,6 +60,34 @@ step-by-step for running quaestor live under seal, unattended, all week.
    make verify                      # the week's receipts, offline
    ```
 
+## Unattended operation (the watchdog)
+
+The loop is market-hours aware and sleeps to the next open on its own, so it only
+has to keep existing. The risk is that its process vanishes quietly — a reboot, a
+`wsl --shutdown`, a laptop that slept, a crash — and nobody notices until the
+deadline. `scripts/watchdog.ps1` covers that, registered as a Windows scheduled
+task by `scripts/install-watchdog.ps1`:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-watchdog.ps1
+```
+
+Three triggers: every 5 minutes (crash), at logon (reboot), and daily at 16:15
+local / 09:15 ET **waking the machine** (slept through the open — the failure that
+costs a whole trading day). It also restarts a loop whose heartbeat has gone stale
+during market hours, because a hung process is worse than a dead one: a dead one
+gets replaced.
+
+The watchdog is idempotent — it starts the loop only when nothing is running — so
+overlapping triggers cannot put two agents on the same account. It never touches
+an order. Its log is `runs/watchdog.log`.
+
+Verified end to end 2026-08-31: killing the loop at 23:21:27 had it back at
+23:21:50, unattended.
+
+Remove it after the contest with
+`Unregister-ScheduledTask -TaskName quaestor-watchdog -Confirm:$false`.
+
 ## Daily (each trading day)
 
 - Morning: confirm the loop is still running (`heartbeat.json` recent) and

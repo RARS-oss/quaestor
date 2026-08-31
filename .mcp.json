@@ -4,7 +4,7 @@
       "command": "wsl",
       "args": [
         "-d", "Ubuntu", "--", "bash", "-lc",
-        "set -a; source /mnt/c/Users/Daniil/Desktop/alpaca-hack/quaestor/.env; export ALPACA_PAPER_TRADE=true ALPACA_TOOLSETS=account,trading,assets,stock-data,options-data,news; exec ~/.local/bin/uvx alpaca-mcp-server==2.3.0"
+        "set -a; source /mnt/c/Users/Daniil/Desktop/alpaca-hack/quaestor/.env; export ALPACA_PAPER_TRADE=true ALPACA_TOOLSETS=account,trading,assets,stock-data,options-data,news; exec ~/.local/bin/uvx --with 'fastmcp==3.1.0' alpaca-mcp-server==2.3.0"
       ]
     }
   }

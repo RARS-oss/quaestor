@@ -563,7 +563,9 @@ def _directional_long(ctx: Context, underlying: str, direction: int, *, tag: str
     if mid is None or mid <= 0:
         return None
     limit = round(mid, 2)
-    qty = _size_by_cap(equity, ctx.policy, limit, catalyst=True)
+    is_conviction = tag == "CONVICTION"
+    qty = _size_by_cap(equity, ctx.policy, limit,
+                       catalyst=not is_conviction, conviction=is_conviction)
     if qty < 1:
         return None
     word = "call" if opt_type == "C" else "put"
@@ -1249,15 +1251,21 @@ def _find_quote(chains: dict[str, dict[str, dict]], sym: str, root: str) -> dict
 
 
 def _size_by_cap(equity: float, policy: dict, unit_debit: float, *,
-                 catalyst: bool = False, income: bool = False) -> int:
+                 catalyst: bool = False, income: bool = False,
+                 conviction: bool = False) -> int:
     """Contracts (strategy units) so that unit_debit*100*qty <= per-trade cap.
 
-    Three caps: income (premium selling, small — ~2.5%), catalyst (convex bets,
-    large — ~22%), default (directional verticals — ~12%). income wins if set:
-    selling insurance big is how a premium book blows up on one bad day."""
+    Four caps, narrowest first: income (premium selling, ~2.5%), conviction
+    (momentum longs, ~8%), catalyst (dated calendar events, ~22%), default
+    (directional verticals, ~12%). income wins if set: selling insurance big is
+    how a premium book blows up on one bad day. conviction beats catalyst because
+    momentum is a continuous signal, not a scheduled trigger — sizing it like an
+    event is what put 22% of the account into one 1DTE call on 2026-09-01."""
     per_trade = (policy or {}).get("per_trade") or {}
     if income:
         key, fallback = "max_loss_pct_income", 2.5
+    elif conviction:
+        key, fallback = "max_loss_pct_conviction", 8.0
     elif catalyst:
         key, fallback = "max_loss_pct_catalyst", 20.0
     else:

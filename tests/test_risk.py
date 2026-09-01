@@ -856,3 +856,30 @@ def test_understated_max_loss_is_refused(policy, account):
     )
     assert derive_max_loss_usd(debit) == 210.0
     assert check_max_loss_derivable(debit).ok
+
+
+def test_conviction_does_not_borrow_the_event_cap(policy, account):
+    """Momentum conviction is a continuous signal, not a dated trigger.
+
+    It used to be sized on max_loss_pct_catalyst simply because it carries a
+    catalyst_tag, and on 2026-09-01 that put 22% of the account into a single
+    1DTE QQQ call — which then bled on theta and vega while QQQ moved our way,
+    for -$4,224 in two hours. A real calendar event keeps the larger cap.
+    """
+    pt = policy["per_trade"]
+    conviction_cap = account.equity * float(pt["max_loss_pct_conviction"]) / 100.0
+    catalyst_cap = account.equity * float(pt["max_loss_pct_catalyst"]) / 100.0
+    assert conviction_cap < catalyst_cap
+
+    # sized just over the conviction cap: refused when tagged CONVICTION...
+    over = make_vertical(catalyst_tag="CONVICTION", max_loss_usd=conviction_cap + 100.0)
+    check = risk.check_per_trade_cap(over, policy, account)
+    assert not check.ok and "conviction" in check.detail
+
+    # ...and allowed for a dated event, which is what the big cap is for
+    event = make_vertical(catalyst_tag="NFP_OPEN_PLAY", max_loss_usd=conviction_cap + 100.0)
+    assert risk.check_per_trade_cap(event, policy, account).ok
+
+    # and the event cap is still a cap
+    huge = make_vertical(catalyst_tag="NFP_OPEN_PLAY", max_loss_usd=catalyst_cap + 100.0)
+    assert not risk.check_per_trade_cap(huge, policy, account).ok

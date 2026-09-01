@@ -269,6 +269,11 @@ def check_per_trade_cap(intent: TradeIntent, policy: dict, account: AccountSnaps
         # deadliest failure). Default 2.5% if the policy predates the income cap.
         cap_pct = float(pt.get("max_loss_pct_income", 2.5))
         which = "income"
+    elif intent.catalyst_tag == "CONVICTION":
+        # Momentum conviction is a continuous signal, not a dated trigger, and must
+        # not borrow the event-sized cap — see policy.yaml and 2026-09-01.
+        cap_pct = float(pt.get("max_loss_pct_conviction", 8.0))
+        which = "conviction"
     elif intent.catalyst_tag:
         cap_pct = float(pt["max_loss_pct_catalyst"])
         which = f"catalyst {intent.catalyst_tag!r}"

@@ -25,7 +25,15 @@ account:
     QQQ: 70
 per_trade:
   max_loss_pct_default: 12         # of current equity, worst-case defined risk
-  max_loss_pct_catalyst: 22        # catalyst/conviction shots (the convex bets)
+  max_loss_pct_catalyst: 22        # DATED calendar events only (NFP, ISM, ADP): a known
+                                   # trigger at a known minute, worth sizing up for.
+  max_loss_pct_conviction: 8       # momentum conviction is NOT an event. It used to borrow
+                                   # the catalyst cap, and on 2026-09-01 that put 22% of the
+                                   # account into a single 1DTE QQQ call: it bled on theta and
+                                   # vega while the underlying moved OUR WAY, and cost -$4,224
+                                   # in two hours — more than everything else that day
+                                   # combined. A continuous signal does not deserve
+                                   # event-sized risk.
   max_loss_pct_income: 2.5         # PREMIUM SELLING is sized SMALL: an income condor
                                    # risks <=2.5% equity so one range-break can't erase
                                    # weeks of collected credit. Enforced in strategy

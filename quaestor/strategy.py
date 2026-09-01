@@ -771,6 +771,27 @@ def _pair_spreads(
     return pairs, singles
 
 
+def _short_strike_touched(ctx: Context, short_pos: dict, now: datetime) -> bool:
+    """Has price reached the strike we are short on this side?
+
+    Spot is read off the option chain itself (where call and put mids meet), so
+    this needs no extra market-data call and survives a feed that nulls greeks —
+    the same trick the strike selection uses. A short call is tested from above,
+    a short put from below. Unknown spot means unknown answer: return False and
+    leave the decision to the other exit rules rather than guessing.
+    """
+    sym = str(short_pos.get("symbol") or "")
+    meta = _occ_meta(sym)
+    if meta is None:
+        return False
+    chain = (ctx.chains or {}).get(meta["root"]) or {}
+    spot = _implied_spot(chain, meta["expiry"]) if chain else None
+    if not spot or spot <= 0:
+        return False
+    strike = float(meta["strike"])
+    return spot >= strike if meta["type"] == "C" else spot <= strike
+
+
 def _spread_close_intent(
     ctx: Context, long_pos: dict, short_pos: dict, now: datetime, all_cash: bool,
     flat_reason: str = "ALL_CASH: final-day flatten before submission deadline",
@@ -820,6 +841,13 @@ def _spread_close_intent(
         captured = 1.0 - (cost_to_close / credit_recv) if credit_recv > 0 else 0.0
         if captured >= INCOME_TAKE_FRAC:
             reason = f"income target: captured {captured:+.0%} of credit"
+        elif _short_strike_touched(ctx, short_pos, now):
+            # The credit stop is deliberately wide — 2.2x on a 0.80 credit means
+            # not acting until the buy-back costs 1.76 — so on its own it lets a
+            # tested side run a long way first. Price reaching the strike we sold
+            # is the earlier and more honest signal that this side is wrong, and
+            # it does not depend on quotes that go noisy in the pennies.
+            reason = f"short strike {_occ_meta(short_sym)['strike']:g} touched"
         elif cost_to_close >= INCOME_STOP_MULT * credit_recv:
             reason = f"income stop: cost {cost_to_close:.2f} >= {INCOME_STOP_MULT:g}x credit"
         elif is_0dte and _near_0dte_flatten(ctx.policy, now):

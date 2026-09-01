@@ -766,3 +766,46 @@ def test_income_sleeve_expiry_targets_respect_same_day_only() -> None:
     pol_off = {"timing": {"no_new_0dte_after_et": "15:10"}, "income": {"same_day_only": False}}
     assert targets(pol_off, morning) == (0, 1)
     assert targets(pol_off, late) == (1,)
+
+
+def test_touched_short_strike_closes_before_the_wide_credit_stop() -> None:
+    """Price reaching the strike we sold is the earlier signal that a side is wrong.
+
+    The credit stop is deliberately wide — 2.2x on a 0.80 credit means not acting
+    until the buy-back costs 1.76 — so on its own it lets a tested side run a long
+    way. On 2026-08-31 a short call went 0.56 -> 1.01 with no intervention.
+    """
+    from quaestor.strategy import _short_strike_touched
+
+    exp = "260904"
+    short_call = _occ("SPY", exp, "C", 700)
+    short_put = _occ("SPY", exp, "P", 690)
+
+    def _ctx_at(spot: float):
+        # a chain whose call and put mids meet at `spot`, which is where
+        # _implied_spot reads the underlying from
+        chain = {}
+        for k in range(int(spot) - 5, int(spot) + 6):
+            d = k - spot
+            chain[_occ("SPY", exp, "C", k)] = _q(max(0.0, -d) + 1.0, max(0.0, -d) + 1.04)
+            chain[_occ("SPY", exp, "P", k)] = _q(max(0.0, d) + 1.0, max(0.0, d) + 1.04)
+        return Context(settings=None, policy=POLICY, calendar={}, account=_account(),
+                       portfolio={}, signals={}, sentiment={}, chains={"SPY": chain},
+                       contracts={}, now=datetime(2026, 9, 2, 11, 0, tzinfo=ET),
+                       due_events=[])
+
+    now = datetime(2026, 9, 2, 11, 0, tzinfo=ET)
+
+    # short call is tested from above
+    assert _short_strike_touched(_ctx_at(701.0), {"symbol": short_call}, now)
+    assert not _short_strike_touched(_ctx_at(695.0), {"symbol": short_call}, now)
+
+    # short put is tested from below
+    assert _short_strike_touched(_ctx_at(689.0), {"symbol": short_put}, now)
+    assert not _short_strike_touched(_ctx_at(695.0), {"symbol": short_put}, now)
+
+    # no chain for that root -> no opinion, leave it to the other exit rules
+    empty = Context(settings=None, policy=POLICY, calendar={}, account=_account(),
+                    portfolio={}, signals={}, sentiment={}, chains={}, contracts={},
+                    now=now, due_events=[])
+    assert not _short_strike_touched(empty, {"symbol": short_call}, now)

@@ -112,6 +112,49 @@ def _occ_type(symbol: str) -> str:
     return symbol[-9]
 
 
+def _occ_strike(symbol: str) -> float:
+    return int(symbol[-8:]) / 1000.0
+
+
+def derive_max_loss_usd(intent: TradeIntent) -> float | None:
+    """Worst-case loss in dollars, derived from the OCC strikes and the net limit.
+
+    Independent of whatever the strategy claimed. For a net debit the most that
+    can be lost is what is paid; for a net credit it is the widest spread we are
+    short, less the credit taken in. Returns None when the legs do not describe a
+    shape this can bound — the caller then has nothing to compare and must say so
+    rather than pretend.
+    """
+    if intent.structure is Structure.CLOSE:
+        return None
+    qty = float(intent.qty or 0)
+    lp = intent.limit_price
+    if qty <= 0 or not isinstance(lp, (int, float)) or not math.isfinite(lp) or lp == 0:
+        return None
+    if lp > 0:                                   # debit paid is the whole risk
+        return round(lp * 100.0 * qty, 2)
+
+    groups: dict[tuple[str, str], dict[str, list[float]]] = {}
+    for leg in intent.legs:
+        if not _occ_valid(leg.symbol):
+            return None
+        key = (_occ_root(leg.symbol), _occ_type(leg.symbol))
+        side = groups.setdefault(key, {"short": [], "long": []})
+        if leg.position_intent is PositionIntent.SELL_TO_OPEN:
+            side["short"].append(_occ_strike(leg.symbol))
+        elif leg.position_intent is PositionIntent.BUY_TO_OPEN:
+            side["long"].append(_occ_strike(leg.symbol))
+
+    widest = 0.0
+    for side in groups.values():
+        for short_k in side["short"]:
+            for long_k in side["long"]:
+                widest = max(widest, abs(long_k - short_k))
+    if widest <= 0:
+        return None
+    return round((widest - abs(lp)) * 100.0 * qty, 2)
+
+
 def _leg_mid(snap: dict[str, Any] | None) -> float | None:
     """Best mid for one leg's snapshot dict; None when no usable quote exists."""
     if snap is None:
@@ -535,6 +578,42 @@ def check_sane_limit_price(intent: TradeIntent, chain: dict[str, dict]) -> RiskC
     )
 
 
+def check_max_loss_derivable(intent: TradeIntent) -> RiskCheck:
+    """The claimed worst case must not be smaller than the one the strikes imply.
+
+    Every dollar cap in this file is measured against intent.max_loss_usd, and
+    until now that number was simply believed. A sizing bug in strategy.py could
+    therefore under-report risk, sail through every cap, and be signed into the
+    receipt as fact — on a project whose whole claim is that the receipt proves
+    what happened. So the worst case is re-derived here from the OCC strikes and
+    the net limit, and a claim materially below it is refused.
+
+    Over-reporting is left alone: it only makes the caps stricter, and rounding
+    should never trip a gate, hence the small tolerance.
+    """
+    name = "max_loss_derivable"
+    if intent.structure is Structure.CLOSE:
+        return _skip_for_close(name)
+    derived = derive_max_loss_usd(intent)
+    if derived is None:
+        return RiskCheck(
+            name, True,
+            "worst case is not derivable from these legs — nothing to compare against",
+        )
+    claimed = float(intent.max_loss_usd)
+    tolerance = max(1.0, 0.01 * abs(derived))
+    if claimed < derived - tolerance:
+        return RiskCheck(
+            name, False,
+            f"claimed max loss ${claimed:.2f} is below ${derived:.2f} derived from "
+            f"the strikes — the signed number must be the proven one",
+        )
+    return RiskCheck(
+        name, True,
+        f"claimed ${claimed:.2f} covers the ${derived:.2f} derived from the strikes",
+    )
+
+
 def check_qty_positive(intent: TradeIntent) -> RiskCheck:
     """qty is whole strategy units (contracts x ratio_qty); must be an int >= 1."""
     name = "qty_positive"
@@ -605,6 +684,7 @@ def judge(
         check_paper_gate(policy),
         check_structure_allowed(intent, policy),
         check_defined_risk(intent, policy),
+        check_max_loss_derivable(intent),
         check_per_trade_cap(intent, policy, account),
         check_aggregate_risk(intent, policy, account, portfolio_state),
         check_daily_halt(intent, policy, portfolio_state),

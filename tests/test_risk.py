@@ -10,6 +10,7 @@ Run from the repo root: python -m pytest tests/test_risk.py -q
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
 import hashlib
 import math
 from datetime import datetime
@@ -46,7 +47,8 @@ P650 = "SPY260904P00650000"
 NOW = datetime(2026, 9, 1, 10, 30, tzinfo=ET)
 
 EXPECTED_CHECK_ORDER = [
-    "paper_gate", "structure_allowed", "defined_risk", "per_trade_cap",
+    "paper_gate", "structure_allowed", "defined_risk", "max_loss_derivable",
+    "per_trade_cap",
     "aggregate_risk", "daily_halt", "weekly_halt", "concurrency", "concentration",
     "spread_quality", "open_interest", "leg_price_min", "timing",
     "sane_limit_price", "qty_positive", "mleg_rules",
@@ -813,3 +815,44 @@ def test_penny_net_mid_does_not_block_an_exit(policy, account):
     assert _MID_NOISE_FLOOR > 0
     fat = run_judge(make_close(limit_price=-5.0), policy, account)
     assert not get_check(fat, "sane_limit_price").ok
+
+
+def test_understated_max_loss_is_refused(policy, account):
+    """The dollar caps are only as honest as the number they are measured against.
+
+    Every cap in risk.py reads intent.max_loss_usd, and that number used to be
+    taken on trust: a credit spread 5 points wide could declare a $50 worst case
+    against a real $440 and clear both defined_risk and per_trade_cap. On a
+    project whose claim is that the receipt proves what happened, a sizing bug in
+    strategy.py could have been signed as fact. The worst case is now re-derived
+    from the OCC strikes.
+    """
+    from quaestor.risk import check_max_loss_derivable, derive_max_loss_usd
+
+    honest = TradeIntent(
+        underlying="SPY", structure=Structure.VERTICAL_CREDIT,
+        legs=[Leg("SPY260903P00760000", Side.SELL, 1, PositionIntent.SELL_TO_OPEN),
+              Leg("SPY260903P00755000", Side.BUY, 1, PositionIntent.BUY_TO_OPEN)],
+        qty=1, limit_price=-0.60, thesis="t", max_loss_usd=440.0,
+    )
+    assert derive_max_loss_usd(honest) == 440.0
+    assert check_max_loss_derivable(honest).ok
+
+    liar = replace(honest, max_loss_usd=50.0)
+    check = check_max_loss_derivable(liar)
+    assert not check.ok
+    assert "derived from" in check.detail
+    assert not run_judge(liar, policy, account).approved
+
+    # overstating is conservative — it only tightens the caps, so it is allowed
+    assert check_max_loss_derivable(replace(honest, max_loss_usd=900.0)).ok
+
+    # a debit structure risks exactly what it pays
+    debit = TradeIntent(
+        underlying="SPY", structure=Structure.VERTICAL_DEBIT,
+        legs=[Leg("SPY260903C00760000", Side.BUY, 1, PositionIntent.BUY_TO_OPEN),
+              Leg("SPY260903C00765000", Side.SELL, 1, PositionIntent.SELL_TO_OPEN)],
+        qty=2, limit_price=1.05, thesis="t", max_loss_usd=210.0,
+    )
+    assert derive_max_loss_usd(debit) == 210.0
+    assert check_max_loss_derivable(debit).ok

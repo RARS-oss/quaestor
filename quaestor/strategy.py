@@ -327,7 +327,16 @@ def _income_condors(ctx: Context) -> list[TradeIntent]:
         seen: set[date] = set()
         # Past the 0DTE entry cutoff a same-day condor is dead on arrival at the
         # timing gate, so don't spend the cycle on it — go straight to tomorrow.
-        targets = (1,) if _past_0dte_entry_cutoff(ctx.policy, _as_et(ctx.now)) else (0, 1)
+        # Unless income.same_day_only is set, in which case there IS no tomorrow:
+        # a position held overnight cannot be stopped out, and the stop is the
+        # entire risk control on a short condor. Past the cutoff we simply stand
+        # down rather than buy gap risk we have no way to manage.
+        past_cutoff = _past_0dte_entry_cutoff(ctx.policy, _as_et(ctx.now))
+        same_day_only = bool((ctx.policy.get("income") or {}).get("same_day_only", False))
+        if same_day_only:
+            targets: tuple[int, ...] = () if past_cutoff else (0,)
+        else:
+            targets = (1,) if past_cutoff else (0, 1)
         for target_dte in targets:
             expiry = _choose_expiry(contracts, target_dte, ctx.now)
             if expiry is None or expiry in seen:

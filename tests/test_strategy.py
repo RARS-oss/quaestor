@@ -734,3 +734,35 @@ def test_income_sleeve_skips_0dte_past_the_entry_cutoff() -> None:
     assert _past_0dte_entry_cutoff(pol, after) is True
     # a malformed/absent setting must not wedge the sleeve shut
     assert _past_0dte_entry_cutoff({"timing": {"no_new_0dte_after_et": "junk"}}, after) is False
+
+
+def test_income_sleeve_expiry_targets_respect_same_day_only() -> None:
+    """The overnight-gap rule: with income.same_day_only the sleeve may only take
+    an expiry that dies today, and stands down entirely once the 0DTE entry window
+    has closed.
+
+    A short condor's whole risk control is the 2.2x stop, and a gap steps over it
+    — measured 2026-09-01, QQQ opened -1.30% through the short put and both put
+    spreads stopped out for -$2,355 against $1,264 collected for that night.
+    """
+    from quaestor.strategy import _past_0dte_entry_cutoff
+
+    pol_open = {"timing": {"no_new_0dte_after_et": "15:10"}, "income": {"same_day_only": True}}
+    morning = datetime(2026, 9, 1, 10, 0, tzinfo=ET)
+    late = datetime(2026, 9, 1, 15, 24, tzinfo=ET)
+
+    def targets(policy, now):
+        past = _past_0dte_entry_cutoff(policy, now)
+        same_day = bool((policy.get("income") or {}).get("same_day_only", False))
+        if same_day:
+            return () if past else (0,)
+        return (1,) if past else (0, 1)
+
+    # same_day_only: today's expiry only, and nothing at all past the cutoff
+    assert targets(pol_open, morning) == (0,)
+    assert targets(pol_open, late) == ()
+
+    # without the flag the old behaviour stands: fall through to tomorrow
+    pol_off = {"timing": {"no_new_0dte_after_et": "15:10"}, "income": {"same_day_only": False}}
+    assert targets(pol_off, morning) == (0, 1)
+    assert targets(pol_off, late) == (1,)

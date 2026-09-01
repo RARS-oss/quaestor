@@ -49,6 +49,23 @@ catalyst:
 structures:
   allowed: [long_call, long_put, vertical_debit, vertical_credit, straddle, close]
   defined_risk_only: true          # every short leg must be covered within the same order (mleg rule)
+income:
+  same_day_only: true              # premium-selling entries must expire TODAY.
+                                   # The 2.2x stop is the whole risk control on a
+                                   # condor (credit ~0.8 against width 4, so ~1:5),
+                                   # and an overnight gap bypasses the stop entirely
+                                   # — you wake up past it with no chance to act.
+                                   # Measured 2026-09-01: QQQ gapped -1.30% through
+                                   # the short put overnight and both put spreads
+                                   # stopped out at the open for -$2,355 against
+                                   # $1,264 of credit collected for the night.
+                                   # A 0DTE condor is flat by the curfew, so the
+                                   # stop stays enforceable for the whole life of
+                                   # the position. Costs nothing to enforce: on the
+                                   # morning of Sep 1 the 0DTE condors qualified on
+                                   # both underlyings while the 1DTE ones were
+                                   # rejected on credit anyway.
+
 timing:
   no_new_0dte_after_et: "15:10"
   flat_0dte_by_et: "15:25"

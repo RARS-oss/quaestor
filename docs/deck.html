@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>quaestor — verifiable agent execution</title>
+<style>
+:root{
+  --ground:#f4f6fb; --surface:#ffffff; --surface-2:#eef1f8; --sunken:#f7f8fc;
+  --ink:#131726; --muted:#57617a; --faint:#8790a6;
+  --line:#e2e5f1; --line-strong:#ccd2e4;
+  --accent:#4750d8; --accent-ink:#3038b8; --accent-soft:rgba(71,80,216,.10);
+  --green:#0e9a67; --red:#d63a28; --cyan:#0d8299;
+  --code-bg:#f6f8fd; --code-line:#e6e9f4;
+  --shadow:0 1px 2px rgba(19,23,38,.05), 0 14px 40px rgba(19,23,38,.07);
+  --ring:rgba(71,80,216,.45);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#0b0e15; --surface:#131826; --surface-2:#0f1420; --sunken:#0d111b;
+    --ink:#e8ecf7; --muted:#9aa4bd; --faint:#69708a;
+    --line:#222a3d; --line-strong:#313a53;
+    --accent:#6a7cff; --accent-ink:#8f9dff; --accent-soft:rgba(106,124,255,.13);
+    --green:#35c98c; --red:#ff6459; --cyan:#5fd6e4;
+    --code-bg:#0d111b; --code-line:#1e2536;
+    --shadow:0 0 0 1px rgba(255,255,255,.015) inset, 0 18px 50px rgba(0,0,0,.55);
+    --ring:rgba(106,124,255,.55);
+  }
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{
+  background:var(--ground); color:var(--ink);
+  font:16px/1.55 ui-sans-serif,-apple-system,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+code,.mono{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace}
+
+.deck{height:100vh;overflow:hidden;position:relative}
+.slide{
+  position:absolute;inset:0;display:none;
+  padding:clamp(28px,5vw,76px);
+  overflow-y:auto;
+}
+.slide.on{display:flex;flex-direction:column;justify-content:center}
+.inner{width:100%;max-width:1080px;margin:0 auto}
+
+.eyebrow{
+  font-size:12px;letter-spacing:.22em;text-transform:uppercase;
+  color:var(--accent-ink);font-weight:600;margin-bottom:18px;
+}
+h1{font-size:clamp(32px,5.4vw,60px);line-height:1.08;letter-spacing:-.022em;margin:0 0 20px;font-weight:650}
+h2{font-size:clamp(24px,3.4vw,40px);line-height:1.15;letter-spacing:-.018em;margin:0 0 18px;font-weight:650}
+.lead{font-size:clamp(17px,2vw,22px);line-height:1.5;color:var(--muted);max-width:62ch;margin:0 0 26px}
+p{margin:0 0 14px;max-width:68ch}
+.muted{color:var(--muted)}
+strong{font-weight:650}
+.accent{color:var(--accent-ink)}
+.green{color:var(--green)} .red{color:var(--red)}
+
+ul{margin:0 0 18px;padding-left:0;list-style:none;max-width:70ch}
+li{position:relative;padding-left:26px;margin-bottom:12px;color:var(--muted)}
+li::before{content:"";position:absolute;left:6px;top:.62em;width:6px;height:6px;border-radius:50%;background:var(--accent);opacity:.85}
+li strong{color:var(--ink)}
+
+.grid{display:grid;gap:16px;margin:6px 0 20px}
+.g2{grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
+.g3{grid-template-columns:repeat(auto-fit,minmax(190px,1fr))}
+.card{
+  background:var(--surface);border:1px solid var(--line);border-radius:12px;
+  padding:20px;box-shadow:var(--shadow)
+}
+.card h3{margin:0 0 8px;font-size:15px;font-weight:650;letter-spacing:-.01em}
+.card p{margin:0;font-size:14px;color:var(--muted)}
+
+.stat{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:18px 20px}
+.stat .n{font-size:clamp(24px,3.6vw,34px);font-weight:650;letter-spacing:-.02em;line-height:1.1}
+.stat .k{font-size:12px;letter-spacing:.09em;text-transform:uppercase;color:var(--faint);margin-top:7px}
+
+pre{
+  background:var(--code-bg);border:1px solid var(--code-line);border-radius:10px;
+  padding:16px 18px;overflow-x:auto;font-size:13.5px;line-height:1.6;margin:0 0 18px
+}
+.pill{
+  display:inline-block;padding:5px 11px;border-radius:999px;font-size:12px;font-weight:600;
+  border:1px solid var(--line-strong);color:var(--muted);margin:0 7px 7px 0;background:var(--surface)
+}
+.pill.ok{color:var(--green);border-color:color-mix(in srgb,var(--green) 40%,transparent)}
+.slot{
+  border:1px dashed var(--line-strong);border-radius:8px;padding:3px 9px;
+  color:var(--faint);font-size:.9em
+}
+
+.flow{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:4px 0 20px}
+.step{background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:14px}
+.step .t{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);margin-bottom:6px}
+.step .d{font-size:14px;color:var(--ink);font-weight:600}
+
+.bar{
+  position:fixed;left:0;right:0;bottom:0;height:44px;display:flex;align-items:center;
+  justify-content:space-between;padding:0 18px;background:var(--surface);
+  border-top:1px solid var(--line);font-size:12.5px;color:var(--faint);z-index:5
+}
+.bar button{
+  font:inherit;background:transparent;border:1px solid var(--line-strong);color:var(--muted);
+  border-radius:7px;padding:4px 11px;cursor:pointer;margin-left:6px
+}
+.bar button:hover{color:var(--ink);border-color:var(--accent)}
+.bar .who{letter-spacing:.05em}
+.deck{padding-bottom:44px}
+
+@media print{
+  .bar{display:none}
+  .deck{height:auto;overflow:visible}
+  .slide{display:flex!important;position:relative;inset:auto;min-height:92vh;page-break-after:always;border:0}
+}
+</style>
+</head>
+<body>
+
+<div class="deck" id="deck">
+
+  <!-- 1 -->
+  <section class="slide on">
+    <div class="inner">
+      <div class="eyebrow">Alpaca AI Trading Agents Hackathon · 2026</div>
+      <h1>quaestor</h1>
+      <p class="lead">An autonomous options agent whose every trade is cryptographically
+      signed, hermetically sealed, and <strong>independently verifiable</strong> — offline,
+      in about thirty seconds, with no credentials.</p>
+      <div>
+        <span class="pill ok">seal held 39 / 39</span>
+        <span class="pill ok">50 / 50 receipts verified</span>
+        <span class="pill">Ed25519 · externally anchored</span>
+        <span class="pill">paper trading only</span>
+      </div>
+      <p class="muted" style="margin-top:22px;font-size:14px">
+        Account <code>PA3MOH6DEEEH</code> · github.com/RARS-oss/quaestor
+      </p>
+    </div>
+  </section>
+
+  <!-- 2 -->
+  <section class="slide">
+    <div class="inner">
+      <div class="eyebrow">01 · The gap</div>
+      <h2>The rails exist. The trust layer doesn't.</h2>
+      <p class="lead">Agents already trade on Alpaca's API. None of them can produce a
+      record of what they actually did.</p>
+      <ul>
+        <li>A screenshot saying <strong>"+40% this month"</strong> could be cherry-picked,
+          backdated, or invented. The operator's word is the only thing tying the claim to
+          the exchange.</li>
+        <li>That missing piece blocks everything downstream: an <strong>agent
+          marketplace</strong>, <strong>copy-trading</strong>, <strong>compliance-grade
+          execution logs</strong>.</li>
+        <li>You cannot fund, follow, or audit a strategy on reputation alone.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 3 -->
+  <section class="slide">
+    <div class="inner">
+      <div class="eyebrow">02 · The agent</div>
+      <h2>Autonomous options, every five minutes</h2>
+      <div class="flow">
+        <div class="step"><div class="t">Read</div><div class="d">SPY / QQQ chains, greeks, bars</div></div>
+        <div class="step"><div class="t">Classify</div><div class="d">Regime: range · trend · storm</div></div>
+        <div class="step"><div class="t">Form</div><div class="d">Defined-risk spreads, catalyst plays</div></div>
+        <div class="step"><div class="t">Judge</div><div class="d">17 deterministic risk gates</div></div>
+        <div class="step"><div class="t">Execute</div><div class="d">Multi-leg, inside a sealed cell</div></div>
+      </div>
+      <ul>
+        <li><strong>Regime gates the playbook.</strong> Storm stands down. Range sells
+          premium. Trend buys convexity.</li>
+        <li><strong>Every intent is judged before it reaches the exchange</strong> —
+          per-trade loss caps, concentration, spread quality, 0DTE cutoffs, a daily halt
+          that flattens the book.</li>
+        <li><strong>Premium is never held overnight.</strong> The stop is the risk control
+          on a short spread, and a gap steps over a stop.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 4 -->
+  <section class="slide">
+    <div class="inner">
+      <div class="eyebrow">03 · The primitive</div>
+      <h2>The order is not placed by the agent</h2>
+      <p class="lead">It is placed from inside a hermetic, no-root cell — no network, no
+      filesystem, no ambient credentials.</p>
+      <div class="grid g2">
+        <div class="card">
+          <h3>TLS terminates inside the seal</h3>
+          <p>The cell reaches Alpaca through a mediated tunnel. The broker never sees the
+          keys, and every call is hash-chained into the record.</p>
+        </div>
+        <div class="card">
+          <h3>The receipt is the exchange transcript</h3>
+          <p>Ed25519-signed, covering the exact conversation: which contract, which price,
+          which response.</p>
+        </div>
+        <div class="card">
+          <h3>Receipts chain into a ledger</h3>
+          <p>Tamper-evident, and its head is witnessed to an external anchor.</p>
+        </div>
+        <div class="card">
+          <h3>Both edits are caught</h3>
+          <p>Change one number and the signature rejects it. Drop one losing day and the
+          chain breaks.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5 -->
+  <section class="slide">
+    <div class="inner">
+      <div class="eyebrow">04 · The demo</div>
+      <h2>Don't take it on faith — check it</h2>
+      <pre>$ make verify
+verify: 50/50 receipts verified OK
+seal_held 39 · seal_broken 0 · chain intact</pre>
+      <ul>
+        <li><strong>Offline, no credentials.</strong> The same check compiled to
+          <strong>WebAssembly</strong> runs entirely in the judge's browser.</li>
+        <li><strong>Paste a receipt — verified. Change a single character — rejected.</strong>
+          No server, no trust, no API call.</li>
+        <li><strong>Deterministic replay.</strong> Each decision seals the inputs it was
+          judged on <em>and the policy it was judged under</em>, so every approve and reject
+          re-derives from signed data.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 -->
+  <section class="slide">
+    <div class="inner">
+      <div class="eyebrow">05 · The guard</div>
+      <h2>The safety claims are tested, not asserted</h2>
+      <ul>
+        <li><strong>The policy's own sha256 is signed into every receipt.</strong> Loosening
+          the rules mid-week is cryptographically visible in the audit trail.</li>
+        <li><strong>The worst case is derived, not believed.</strong> Every dollar cap is
+          measured against a number re-derived from the OCC strikes — a spread that
+          under-reports its own risk is refused, so a sizing bug cannot be signed as fact.</li>
+        <li><strong>A zero-knowledge range proof</strong> rides in the Alpaca
+          <code>client_order_id</code>: worst-case loss under a hard cap, size hidden.</li>
+        <li><strong>205 tests</strong> across the gates, the strategy, the receipts and the
+          replay path.</li>
+      </ul>
+      <p class="muted" style="font-size:14.5px">Four fraud vectors — a forged verdict, an
+      edited receipt, a dropped ledger line, a faked risk proof — each demonstrated being
+      caught, in <code>scripts/red_team.sh</code>.</p>
+    </div>
+  </section>
+
+  <!-- 7 -->
+  <section class="slide">
+    <div class="inner">
+      <div class="eyebrow">06 · Why it matters to Alpaca</div>
+      <h2>A track record becomes an asset instead of a claim</h2>
+      <p class="lead">Once execution is verifiable, the things a broker cannot currently
+      offer become possible.</p>
+      <div class="grid g3">
+        <div class="card"><h3>Verified agent marketplace</h3><p>Rank and list agents on
+          evidence rather than screenshots.</p></div>
+        <div class="card"><h3>Copy-trading an AI strategy</h3><p>Follow a record that the
+          follower can check themselves.</p></div>
+        <div class="card"><h3>Compliance-grade logs</h3><p>Answer "what exactly did this
+          agent do, and when" with something a regulator accepts.</p></div>
+      </div>
+      <p>Packaged as <strong><code>attested-alpaca</code></strong> — any agent on Alpaca
+      adopts verifiable execution in a few lines. quaestor is the reference implementation,
+      not the product.</p>
+    </div>
+  </section>
+
+  <!-- 8 -->
+  <section class="slide">
+    <div class="inner">
+      <div class="eyebrow">07 · The week</div>
+      <h2>Results you can re-check yourself</h2>
+      <div class="grid g3">
+        <div class="stat"><div class="n"><span class="slot">fill Sep 4</span></div><div class="k">Week P&amp;L</div></div>
+        <div class="stat"><div class="n">PA3MOH6DEEEH</div><div class="k">Fresh $100,000 paper account</div></div>
+        <div class="stat"><div class="n green">0</div><div class="k">Seals broken</div></div>
+      </div>
+      <ul>
+        <li>Every cycle of the contest week is receipted — including the quiet ones, because
+          <strong>choosing not to trade is part of the audit</strong>.</li>
+        <li>Every order was placed from inside a sealed cell, over a mediated tunnel, on the
+          paper endpoint only.</li>
+        <li>The record is <strong>portable</strong>: <code>quaestor bundle</code> exports
+          receipts, ledgers, anchor and an offline verifier as one folder.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 9 -->
+  <section class="slide">
+    <div class="inner">
+      <div class="eyebrow">08 · Close</div>
+      <h1 style="max-width:16ch">Don't trust the number. Verify it.</h1>
+      <p class="lead">Every other agent asks you to believe its track record.
+      This one hands you the evidence and the tool to check it.</p>
+      <pre>make verify          # offline, no credentials, ~30 seconds
+dashboard/verifier.html   # the same check, in your browser</pre>
+      <p class="muted" style="font-size:14px">
+        RARS-oss · github.com/RARS-oss/quaestor · paper trading only
+      </p>
+    </div>
+  </section>
+
+</div>
+
+<div class="bar">
+  <span class="who">quaestor · verifiable agent execution</span>
+  <span>
+    <span id="pos" class="mono">1 / 9</span>
+    <button onclick="go(-1)">←</button>
+    <button onclick="go(1)">→</button>
+    <button onclick="window.print()">PDF</button>
+  </span>
+</div>
+
+<script>
+var slides = document.querySelectorAll('.slide'), i = 0;
+function show(n){
+  i = Math.max(0, Math.min(slides.length - 1, n));
+  slides.forEach(function(s, k){ s.classList.toggle('on', k === i); });
+  document.getElementById('pos').textContent = (i + 1) + ' / ' + slides.length;
+  if (location.hash !== '#' + (i + 1)) history.replaceState(null, '', '#' + (i + 1));
+}
+function go(d){ show(i + d); }
+document.addEventListener('keydown', function(e){
+  if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') { e.preventDefault(); go(1); }
+  if (e.key === 'ArrowLeft'  || e.key === 'PageUp')  { e.preventDefault(); go(-1); }
+  if (e.key === 'Home') show(0);
+  if (e.key === 'End')  show(slides.length - 1);
+});
+document.getElementById('deck').addEventListener('click', function(e){
+  if (e.target.closest('a,button,pre')) return;
+  go(e.clientX > window.innerWidth * 0.5 ? 1 : -1);
+});
+show(parseInt((location.hash || '#1').slice(1), 10) - 1 || 0);
+</script>
+</body>
+</html>

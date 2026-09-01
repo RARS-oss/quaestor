@@ -46,6 +46,7 @@ verifiable surface. Then the fastest path to the parts that matter:
 | **3 minutes** | Open `dashboard/track-record.html`, click **Verify**, then **Tamper** | A provable agent P&L record; the signature catching a forgery live |
 | **5 minutes** | `make replay` · `bash scripts/red_team.sh` | Every decision re-derived from signed inputs; the four ways to fake results, each caught |
 | **7 minutes** | Open `dashboard/marketplace.html` | "Alpaca Verified Agents" — the product this primitive unlocks |
+| **8 minutes** | Open [`docs/deck.html`](docs/deck.html) | The whole argument in nine slides — arrow keys, or print to PDF |
 | **10 minutes** | Read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) + skim [`attested_alpaca/`](attested_alpaca/) | How any Alpaca agent adopts verifiable execution in a few lines |
 | **15 minutes** | Read [`patches/bulla/`](patches/bulla/) — the sealed-egress tunnel | We patched a Rust sandbox so an agent trades *inside* the seal |
 

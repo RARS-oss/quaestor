@@ -67,6 +67,12 @@ _CREDIT_STRUCTURES = frozenset({Structure.VERTICAL_CREDIT})
 
 _EPS = 1e-9
 SANE_PRICE_BAND = (0.5, 1.5)  # |limit| must be within this multiple of |net mid|
+# Below this, a net mid off the free indicative feed is noise rather than signal:
+# at a few cents the mid of a higher strike can print BELOW a lower one, which
+# inverts the sign of the net and makes any comparison against it meaningless.
+# Measured live 2026-09-01: a spread that cost 0.03 to close showed a net mid of
+# -0.01 and its exit was rejected for "sign contradicts".
+_MID_NOISE_FLOOR = 0.05
 MAX_MLEG_LEGS = 4             # Alpaca mleg hard limit
 
 
@@ -503,6 +509,13 @@ def check_sane_limit_price(intent: TradeIntent, chain: dict[str, dict]) -> RiskC
             name, True,
             f"limit {lp:+.2f} sign consistent with structure; net mid unavailable — band check skipped",
         )
+    if abs(net_mid) < _MID_NOISE_FLOOR:
+        return RiskCheck(
+            name, True,
+            f"limit {lp:+.2f} accepted; net mid {net_mid:+.2f} is below the "
+            f"{_MID_NOISE_FLOOR:.2f} noise floor — nothing to compare against",
+        )
+
     if _sign(lp) != _sign(net_mid):
         return RiskCheck(
             name, False,

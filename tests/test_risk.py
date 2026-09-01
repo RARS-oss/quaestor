@@ -788,3 +788,28 @@ def test_judge_is_deterministic(policy, account):
     v1 = run_judge(intent, policy, account)
     v2 = run_judge(intent, policy, account)
     assert v1.to_dict() == v2.to_dict()
+
+
+def test_penny_net_mid_does_not_block_an_exit(policy, account):
+    """A net mid of a cent or two carries no sign — do not judge a limit against it.
+
+    Live on 2026-09-01 a put spread sitting on 80% of its credit captured could
+    not be closed: the exit cost 0.03, the indicative feed's net mid printed
+    -0.01, and the gate rejected it as "sign contradicts" on every cycle. At a
+    few cents the mid of a higher strike can print below a lower one, so the
+    comparison is noise. The band check still applies once the mid is real.
+    """
+    from quaestor.risk import _MID_NOISE_FLOOR, check_sane_limit_price
+
+    # both legs a cent or two apart -> |net mid| below the floor
+    penny_chain = {C650: {"bid": 0.04, "ask": 0.06, "mid": 0.05},
+                   C655: {"bid": 0.03, "ask": 0.05, "mid": 0.04}}
+    intent = make_close(limit_price=0.02)
+    check = check_sane_limit_price(intent, penny_chain)
+    assert check.ok, check.detail
+    assert "noise floor" in check.detail
+
+    # and the floor is not a blanket amnesty: a real mid still gets judged
+    assert _MID_NOISE_FLOOR > 0
+    fat = run_judge(make_close(limit_price=-5.0), policy, account)
+    assert not get_check(fat, "sane_limit_price").ok

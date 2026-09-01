@@ -21,16 +21,20 @@
 [CmdletBinding()]
 param(
     [string]$TaskName = "quaestor-watchdog",
-    [string]$Script   = "C:\Users\Daniil\Desktop\alpaca-hack\quaestor\scripts\watchdog.ps1",
+    [string]$Launcher = "C:\Users\Daniil\Desktop\alpaca-hack\quaestor\scripts\watchdog-silent.vbs",
     [string]$WakeAt   = "16:15"          # local time == 09:15 ET, 15 min before the open
 )
 
 $ErrorActionPreference = "Stop"
 
-if (-not (Test-Path $Script)) { throw "watchdog script not found: $Script" }
+if (-not (Test-Path $Launcher)) { throw "watchdog launcher not found: $Launcher" }
 
-$action = New-ScheduledTaskAction -Execute "powershell.exe" `
-    -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$Script`""
+# Launched through wscript, not powershell.exe directly: Task Scheduler builds the
+# console host before -WindowStyle Hidden can take effect, so running PowerShell
+# straight from the task flashes a window on every run. wscript creates no console,
+# and the .vbs starts PowerShell hidden from there.
+$action = New-ScheduledTaskAction -Execute "wscript.exe" `
+    -Argument "//B //Nologo `"$Launcher`""
 
 $triggers = @()
 

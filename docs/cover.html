@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>quaestor — submission cover (1200×630)</title>
+<style>
+/* Exactly 1200x630 — the standard submission / social cover size.
+   Screenshot the framed card, or print to PDF and crop.
+   Nothing external is loaded, so it renders identically anywhere. */
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  background:#1b1f2b;min-height:100vh;display:flex;align-items:center;justify-content:center;
+  padding:28px;font-family:ui-sans-serif,-apple-system,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;
+}
+.cover{
+  width:1200px;height:630px;flex:0 0 auto;position:relative;overflow:hidden;
+  background:
+    radial-gradient(900px 460px at 84% 12%, rgba(106,124,255,.16), transparent 62%),
+    radial-gradient(700px 420px at 6% 92%, rgba(53,201,140,.10), transparent 60%),
+    #0b0e15;
+  color:#e8ecf7;box-shadow:0 30px 80px rgba(0,0,0,.5);
+}
+.grid{
+  position:absolute;inset:0;opacity:.5;
+  background-image:linear-gradient(rgba(255,255,255,.028) 1px, transparent 1px),
+                   linear-gradient(90deg, rgba(255,255,255,.028) 1px, transparent 1px);
+  background-size:56px 56px;
+}
+.inner{position:relative;padding:64px 72px;height:100%;display:flex;flex-direction:column}
+
+.eyebrow{
+  font-size:15px;letter-spacing:.24em;text-transform:uppercase;color:#8f9dff;font-weight:600;
+}
+h1{
+  font-size:108px;line-height:1;letter-spacing:-.035em;font-weight:650;margin:26px 0 20px;
+}
+.tag{
+  font-size:30px;line-height:1.32;color:#c3cbe2;max-width:22ch;font-weight:400;
+}
+.tag b{color:#e8ecf7;font-weight:650}
+
+.pills{position:absolute;left:72px;bottom:130px;display:flex;gap:10px;flex-wrap:wrap}
+.pill{
+  border:1px solid rgba(255,255,255,.16);border-radius:999px;padding:9px 17px;
+  font-size:16px;color:#aab3ca;background:rgba(255,255,255,.03)
+}
+.pill.ok{color:#35c98c;border-color:rgba(53,201,140,.42)}
+
+.foot{
+  position:absolute;left:72px;right:72px;bottom:54px;display:flex;
+  justify-content:space-between;align-items:flex-end;
+  border-top:1px solid rgba(255,255,255,.10);padding-top:24px;
+}
+.foot .l{font-size:19px;color:#9aa4bd}
+.foot .l b{color:#e8ecf7;font-weight:600}
+.foot .r{
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:15px;color:#69708a;text-align:right;line-height:1.5
+}
+
+/* the seal mark, top right */
+.seal{
+  position:absolute;right:66px;top:60px;width:190px;height:190px;
+  display:flex;align-items:center;justify-content:center;
+}
+.seal svg{width:100%;height:100%}
+.note{
+  position:fixed;bottom:8px;left:0;right:0;text-align:center;
+  color:#6d768c;font-size:12.5px;letter-spacing:.04em
+}
+@media print{ body{padding:0;background:#fff} .note{display:none} .cover{box-shadow:none} }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <div class="grid"></div>
+
+  <div class="seal" aria-hidden="true">
+    <svg viewBox="0 0 200 200" fill="none">
+      <circle cx="100" cy="100" r="86" stroke="rgba(106,124,255,.30)" stroke-width="1.5"/>
+      <circle cx="100" cy="100" r="66" stroke="rgba(106,124,255,.18)" stroke-width="1.5"/>
+      <circle cx="100" cy="100" r="46" stroke="rgba(53,201,140,.34)" stroke-width="1.5"/>
+      <path d="M76 100l17 17 33-36" stroke="#35c98c" stroke-width="7"
+            stroke-linecap="round" stroke-linejoin="round"/>
+      <g stroke="rgba(106,124,255,.42)" stroke-width="1.5">
+        <path d="M100 14v18M100 168v18M14 100h18M168 100h18"/>
+      </g>
+    </svg>
+  </div>
+
+  <div class="inner">
+    <div class="eyebrow">Alpaca AI Trading Agents Hackathon · 2026</div>
+    <h1>quaestor</h1>
+    <div class="tag">An autonomous options agent whose every trade you can
+      <b>verify yourself</b> — offline, in 30 seconds.</div>
+  </div>
+
+  <div class="pills">
+    <span class="pill ok">Ed25519-signed receipts</span>
+    <span class="pill ok">sealed-cell execution</span>
+    <span class="pill">in-browser WASM verify</span>
+    <span class="pill">paper trading only</span>
+  </div>
+
+  <div class="foot">
+    <div class="l">Don't trust the track record. <b>Check the signature.</b></div>
+    <div class="r">github.com/RARS-oss/quaestor<br>rars-oss.github.io/quaestor</div>
+  </div>
+</div>
+
+<div class="note">Exactly 1200 × 630 — screenshot the card, or print to PDF and crop.</div>
+</body>
+</html>

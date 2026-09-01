@@ -809,3 +809,26 @@ def test_touched_short_strike_closes_before_the_wide_credit_stop() -> None:
                     portfolio={}, signals={}, sentiment={}, chains={}, contracts={},
                     now=now, due_events=[])
     assert not _short_strike_touched(empty, {"symbol": short_call}, now)
+
+
+def test_new_0dte_income_needs_runway_before_the_flatten() -> None:
+    """A condor the curfew will kill in minutes only pays the spread twice.
+
+    Measured live 2026-09-01: entered 15:06, curfew-closed 15:16, net -$64 —
+    collected 0.29, paid 0.31. The gap between the 0DTE entry cutoff and the
+    flatten lead allowed it; new 0DTE entries now need MIN_0DTE_RUNWAY_MIN of
+    life before the flatten window opens.
+    """
+    from quaestor.strategy import (
+        FLAT_0DTE_LEAD_MIN, MIN_0DTE_RUNWAY_MIN, _enough_0dte_runway,
+    )
+    pol = {"timing": {"flat_0dte_by_et": "15:25"}}
+    # flatten window opens 15:15; the 40-min runway floor pushes entries back to 14:35
+    assert FLAT_0DTE_LEAD_MIN + MIN_0DTE_RUNWAY_MIN == 50
+    assert _enough_0dte_runway(pol, datetime(2026, 9, 2, 14, 35, tzinfo=ET))
+    assert not _enough_0dte_runway(pol, datetime(2026, 9, 2, 14, 36, tzinfo=ET))
+    assert not _enough_0dte_runway(pol, datetime(2026, 9, 2, 15, 6, tzinfo=ET))
+    assert _enough_0dte_runway(pol, datetime(2026, 9, 2, 10, 0, tzinfo=ET))
+    # malformed config must not wedge the sleeve shut
+    assert _enough_0dte_runway({"timing": {"flat_0dte_by_et": "junk"}},
+                               datetime(2026, 9, 2, 15, 6, tzinfo=ET))

@@ -98,6 +98,11 @@ MIN_CONDOR_CREDIT_FRAC: float = 0.20  # AND credit must be >= 20% of the wing wi
 INCOME_TAKE_FRAC: float = 0.55       # buy back once 55% of the credit is captured
 INCOME_STOP_MULT: float = 2.2        # stop when it costs 2.2x the credit to close
 FLAT_0DTE_LEAD_MIN: int = 10     # start flattening 0DTE this many min before deadline
+MIN_0DTE_RUNWAY_MIN: int = 40    # a NEW 0DTE income position needs at least this long
+                                 # before the flatten window opens, or it exists only to
+                                 # pay the spread twice: measured 2026-09-01, a condor
+                                 # entered 15:06 was curfew-closed 15:16 for a net -$64 —
+                                 # collected 0.29, paid 0.31, ten minutes of life.
 FLATTEN_TAG: str = "ALL_CASH"
 # IM/RM gate on the long catalyst STRADDLE: only pay for both sides of event vol when
 # it is genuinely cheap vs realized. IM = straddle price / spot (the move the chain is
@@ -290,6 +295,23 @@ def _iron_condor_intent(ctx: Context, u: str, chain: dict[str, dict], expiry: da
     )
 
 
+def _enough_0dte_runway(policy: dict, now_et: datetime) -> bool:
+    """Is there at least MIN_0DTE_RUNWAY_MIN before the 0DTE flatten window opens?
+
+    The entry cutoff (no_new_0dte_after_et) and the flatten lead leave a gap in
+    which a brand-new condor lives for minutes and is then force-closed — all
+    spread, no theta. Same class of churn as the final-day buffer, fixed the same
+    way: as code, so the frozen policy digest stays untouched.
+    """
+    try:
+        hh, mm = _flat_0dte_str(policy).split(":")
+        deadline = now_et.replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
+    except (ValueError, AttributeError):
+        return True
+    flatten_start = deadline - timedelta(minutes=FLAT_0DTE_LEAD_MIN)
+    return now_et <= flatten_start - timedelta(minutes=MIN_0DTE_RUNWAY_MIN)
+
+
 def _past_0dte_entry_cutoff(policy: dict, now_et: datetime) -> bool:
     """True once policy.timing.no_new_0dte_after_et has passed.
 
@@ -331,7 +353,8 @@ def _income_condors(ctx: Context) -> list[TradeIntent]:
         # a position held overnight cannot be stopped out, and the stop is the
         # entire risk control on a short condor. Past the cutoff we simply stand
         # down rather than buy gap risk we have no way to manage.
-        past_cutoff = _past_0dte_entry_cutoff(ctx.policy, _as_et(ctx.now))
+        past_cutoff = (_past_0dte_entry_cutoff(ctx.policy, _as_et(ctx.now))
+                       or not _enough_0dte_runway(ctx.policy, _as_et(ctx.now)))
         same_day_only = bool((ctx.policy.get("income") or {}).get("same_day_only", False))
         if same_day_only:
             targets: tuple[int, ...] = () if past_cutoff else (0,)

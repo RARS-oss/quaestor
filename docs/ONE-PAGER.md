@@ -1,7 +1,7 @@
 # quaestor — one-page write-up (DRAFT v1, will be finalized Sep 3-4 with live results)
 
 **Team:** RARS-oss (solo) · **Account ID:** `PA3MOH6DEEEH` (fresh paper account, opened 2026-08-31, funded at exactly $100,000)
-**Repo:** github.com/RARS-oss/quaestor · **Demo:** _<dashboard URL>_
+**Repo:** github.com/RARS-oss/quaestor · **Demo:** https://rars-oss.github.io/quaestor/
 
 ## AI logic
 

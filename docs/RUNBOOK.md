@@ -88,6 +88,24 @@ Verified end to end 2026-08-31: killing the loop at 23:21:27 had it back at
 Remove it after the contest with
 `Unregister-ScheduledTask -TaskName quaestor-watchdog -Confirm:$false`.
 
+## Submission morning — Fri Sep 4
+
+The demo URL is already written into the one-pager and is deterministic, so the
+only thing left is to switch it on. Do this BEFORE the 11:00 EDT deadline, not at
+10:55:
+
+1. Repo **Settings → General → Change visibility → Public**.
+2. **Settings → Pages → Source: deploy from branch `main`, folder `/ (root)`.**
+   Root, not `/docs` — the landing page at `index.html` links into both `docs/`
+   and `dashboard/`, and a `/docs`-scoped Pages site cannot reach `dashboard/`.
+3. Wait for the green check, then open **https://rars-oss.github.io/quaestor/**
+   in an incognito window and walk the judge's path yourself: verify a receipt,
+   tamper it, watch it fail.
+4. Only then submit.
+
+Everything served is already static and self-contained — no build step, no
+external resources, nothing to configure.
+
 ## Daily (each trading day)
 
 - Morning: confirm the loop is still running (`heartbeat.json` recent) and

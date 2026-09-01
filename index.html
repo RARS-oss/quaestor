@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>quaestor — verifiable agent execution</title>
+<meta name="description" content="An autonomous options agent on Alpaca whose every trade is cryptographically signed and independently verifiable — offline, in your browser, in about thirty seconds.">
+<style>
+:root{
+  --ground:#f4f6fb; --surface:#ffffff; --sunken:#f7f8fc;
+  --ink:#131726; --muted:#57617a; --faint:#8790a6;
+  --line:#e2e5f1; --line-strong:#ccd2e4;
+  --accent:#4750d8; --accent-ink:#3038b8;
+  --green:#0e9a67;
+  --code-bg:#f6f8fd; --code-line:#e6e9f4;
+  --shadow:0 1px 2px rgba(19,23,38,.05), 0 14px 40px rgba(19,23,38,.07);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#0b0e15; --surface:#131826; --sunken:#0d111b;
+    --ink:#e8ecf7; --muted:#9aa4bd; --faint:#69708a;
+    --line:#222a3d; --line-strong:#313a53;
+    --accent:#6a7cff; --accent-ink:#8f9dff;
+    --green:#35c98c;
+    --code-bg:#0d111b; --code-line:#1e2536;
+    --shadow:0 0 0 1px rgba(255,255,255,.015) inset, 0 18px 50px rgba(0,0,0,.55);
+  }
+}
+*{box-sizing:border-box}
+body{
+  margin:0;background:var(--ground);color:var(--ink);
+  font:16px/1.6 ui-sans-serif,-apple-system,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:900px;margin:0 auto;padding:clamp(36px,7vw,84px) 22px 80px}
+.eyebrow{font-size:12px;letter-spacing:.22em;text-transform:uppercase;color:var(--accent-ink);font-weight:600;margin-bottom:16px}
+h1{font-size:clamp(34px,6vw,58px);line-height:1.06;letter-spacing:-.022em;margin:0 0 18px;font-weight:650}
+.lead{font-size:clamp(17px,2.1vw,21px);line-height:1.5;color:var(--muted);max-width:60ch;margin:0 0 26px}
+.pill{display:inline-block;padding:5px 11px;border-radius:999px;font-size:12px;font-weight:600;
+  border:1px solid var(--line-strong);color:var(--muted);margin:0 7px 8px 0;background:var(--surface)}
+.pill.ok{color:var(--green);border-color:color-mix(in srgb,var(--green) 40%,transparent)}
+h2{font-size:20px;letter-spacing:-.012em;margin:44px 0 6px;font-weight:650}
+.sub{color:var(--muted);margin:0 0 18px;font-size:15px}
+.grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(250px,1fr))}
+a.card{
+  display:block;text-decoration:none;color:inherit;background:var(--surface);
+  border:1px solid var(--line);border-radius:12px;padding:18px 20px;box-shadow:var(--shadow);
+  transition:border-color .12s ease, transform .12s ease
+}
+a.card:hover{border-color:var(--accent);transform:translateY(-1px)}
+a.card h3{margin:0 0 6px;font-size:15.5px;font-weight:650;letter-spacing:-.008em}
+a.card p{margin:0;font-size:13.5px;color:var(--muted);line-height:1.5}
+.tag{display:inline-block;font-size:11px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--faint);margin-bottom:8px}
+pre{background:var(--code-bg);border:1px solid var(--code-line);border-radius:10px;
+  padding:15px 17px;overflow-x:auto;font-size:13.5px;line-height:1.6;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;margin:0 0 8px}
+footer{margin-top:56px;padding-top:22px;border-top:1px solid var(--line);color:var(--faint);font-size:13.5px}
+footer a{color:var(--accent-ink)}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.92em}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="eyebrow">Alpaca AI Trading Agents Hackathon · 2026</div>
+  <h1>quaestor</h1>
+  <p class="lead">An autonomous options agent whose every trade is cryptographically
+  signed, hermetically sealed, and <strong>independently verifiable</strong> — offline,
+  in your own browser, in about thirty seconds.</p>
+  <div>
+    <span class="pill ok">Ed25519-signed receipts</span>
+    <span class="pill ok">seal held · chain intact</span>
+    <span class="pill">externally anchored</span>
+    <span class="pill">paper trading only</span>
+  </div>
+
+  <h2>Start here</h2>
+  <p class="sub">Two minutes, no install, nothing to trust.</p>
+  <div class="grid">
+    <a class="card" href="dashboard/verifier.html">
+      <span class="tag">The 30-second version</span>
+      <h3>Verify a receipt →</h3>
+      <p>The signature check compiled to WebAssembly, running entirely in this tab.
+      Verify a real receipt, then change one character and watch it be rejected.</p>
+    </a>
+    <a class="card" href="dashboard/track-record.html">
+      <span class="tag">The record</span>
+      <h3>Track record →</h3>
+      <p>Every decision and every fill of the contest week, each one signed and
+      re-checkable in the page itself.</p>
+    </a>
+    <a class="card" href="docs/deck.html">
+      <span class="tag">The argument</span>
+      <h3>Nine slides →</h3>
+      <p>What it does, how the seal works, and why a provable track record is a
+      primitive Alpaca's stack does not have yet.</p>
+    </a>
+    <a class="card" href="dashboard/index.html">
+      <span class="tag">Everything</span>
+      <h3>All surfaces →</h3>
+      <p>Mission-control console, the marketplace this primitive unlocks, and the
+      guided tour for judges.</p>
+    </a>
+  </div>
+
+  <h2>Or check it yourself, offline</h2>
+  <p class="sub">No credentials, no network, no server. The receipts carry their own proof.</p>
+  <pre>git clone https://github.com/RARS-oss/quaestor
+cd quaestor &amp;&amp; make verify</pre>
+  <p class="sub">Every receipt's signature and the whole hash chain re-check locally.
+  Edit one number in any receipt and the same command rejects it.</p>
+
+  <footer>
+    <strong>quaestor</strong> · RARS-oss ·
+    <a href="https://github.com/RARS-oss/quaestor">github.com/RARS-oss/quaestor</a><br>
+    Paper trading only. Nothing here is investment advice.
+  </footer>
+
+</div>
+</body>
+</html>

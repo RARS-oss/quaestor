@@ -39,7 +39,7 @@ the audit trail shows every gate was consulted.
 from __future__ import annotations
 
 import math
-from datetime import date, datetime, time as dtime
+from datetime import date, datetime, time as dtime, timedelta
 from functools import reduce
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -73,6 +73,13 @@ SANE_PRICE_BAND = (0.5, 1.5)  # |limit| must be within this multiple of |net mid
 # Measured live 2026-09-01: a spread that cost 0.03 to close showed a net mid of
 # -0.01 and its exit was rejected for "sign contradicts".
 _MID_NOISE_FLOOR = 0.05
+# On the final contest day nothing may OPEN this close to the all-cash cutoff:
+# a position entered minutes before a forced flatten pays the spread twice for
+# minutes of exposure — pure churn, on the judged account, on submission
+# morning. Found in the Sep-4 simulation: entries at 10:15 and 10:25 against a
+# 10:30 all-cash. A code constant rather than policy so the frozen policy
+# digest stays untouched.
+FINAL_DAY_ENTRY_BUFFER_MIN = 20
 MAX_MLEG_LEGS = 4             # Alpaca mleg hard limit
 
 
@@ -510,11 +517,17 @@ def check_timing(intent: TradeIntent, policy: dict, now: datetime) -> RiskCheck:
         return RiskCheck(
             name, False, f"past final contest day {final_day.isoformat()} — all-cash, no new positions"
         )
-    if et_now.date() == final_day and et_now.time() >= all_cash_cutoff:
-        return RiskCheck(
-            name, False,
-            f"final-day all-cash cutoff {t['final_day_all_cash_by_et']} ET reached — no new positions",
-        )
+    if et_now.date() == final_day:
+        cutoff_dt = et_now.replace(hour=all_cash_cutoff.hour, minute=all_cash_cutoff.minute,
+                                   second=0, microsecond=0)
+        buffered = cutoff_dt - timedelta(minutes=FINAL_DAY_ENTRY_BUFFER_MIN)
+        if et_now >= buffered:
+            return RiskCheck(
+                name, False,
+                f"final day: within {FINAL_DAY_ENTRY_BUFFER_MIN}min of the all-cash cutoff "
+                f"{t['final_day_all_cash_by_et']} ET — a position opened now just pays the "
+                f"spread twice before the forced flatten",
+            )
     if et_now.time() >= no_new_cutoff:
         return RiskCheck(
             name, False,

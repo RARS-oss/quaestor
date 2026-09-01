@@ -883,3 +883,32 @@ def test_conviction_does_not_borrow_the_event_cap(policy, account):
     # and the event cap is still a cap
     huge = make_vertical(catalyst_tag="NFP_OPEN_PLAY", max_loss_usd=catalyst_cap + 100.0)
     assert not risk.check_per_trade_cap(huge, policy, account).ok
+
+
+def test_final_day_entries_stop_before_the_all_cash_cutoff(policy, account):
+    """No opening a position that exists only to be force-flattened minutes later.
+
+    The Sep-4 simulation showed entries at 10:15 and 10:25 against a 10:30
+    all-cash: on real fills that pays the spread twice for minutes of exposure,
+    on the judged account, on submission morning. Entries on the final day stop
+    FINAL_DAY_ENTRY_BUFFER_MIN before the cutoff; the NFP open play at 09:30
+    keeps a full hour of runway.
+    """
+    from quaestor.risk import FINAL_DAY_ENTRY_BUFFER_MIN, check_timing
+
+    final = policy["timing"]["final_day"]                     # 2026-09-04
+    y, m, d = (int(x) for x in str(final).split("-"))
+    vert = make_vertical()
+
+    early = datetime(y, m, d, 9, 35, tzinfo=ET)               # NFP window: allowed
+    assert check_timing(vert, policy, early).ok
+
+    inside_buffer = datetime(y, m, d, 10, 30 - FINAL_DAY_ENTRY_BUFFER_MIN + 1, tzinfo=ET)
+    blocked = check_timing(vert, policy, inside_buffer)
+    assert not blocked.ok and "all-cash" in blocked.detail
+
+    after = datetime(y, m, d, 10, 45, tzinfo=ET)              # past the cutoff itself
+    assert not check_timing(vert, policy, after).ok
+
+    # closes are never gated by timing
+    assert check_timing(make_close(), policy, after).ok
